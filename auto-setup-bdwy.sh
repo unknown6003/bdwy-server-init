@@ -7,7 +7,7 @@ set -Eeuo pipefail
 INSTALL_PATH="/usr/local/bin/container-updater"
 CRON_PATH="/etc/cron.weekly/container-updater"
 # Change this to your exact public raw GitHub URL so the cron job can auto-update the script itself later
-GITHUB_RAW_URL="https://raw.githubusercontent.com/YOUR_USERNAME/proxmox-autoupdate/main/update.sh"
+GITHUB_RAW_URL="https://raw.githubusercontent.com/unknown6003/bdwy-server-init/refs/heads/main/auto-setup-bdwy.sh"
 
 STARSHIP_CONFIG_CONTENT=$(cat << 'EOF'
 "$schema" = 'https://starship.rs/config-schema.json'
