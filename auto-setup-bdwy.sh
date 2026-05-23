@@ -283,8 +283,7 @@ export APT_LISTCHANGES_FRONTEND=none
 export NEEDRESTART_MODE=a
 export NEEDRESTART_SUSPEND=1
 
-# Hardened APT parameters: Forces IPv4 to skip broken IPv6 DNS stalls, sets 10s cutoff for HTTP/HTTPS
-APT_HEADLESS="apt-get -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o Acquire::Retries=3 -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 -o Acquire::ForceIPv4=true -o Dpkg::Use-Pty=0 -y"
+APT_HEADLESS="apt-get -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Dpkg::Use-Pty=0 -y"
 
 check_file() {
     local type="$1" target="$2" path="$3"
@@ -300,6 +299,33 @@ check_binary() {
 main() {
     > "$APT_LOG"
     > "$ERR_LOG"
+
+    # Identify Runtime Context
+    IS_CRON=false
+    if [[ "$*" == *"--cron"* ]]; then IS_CRON=true; fi
+
+    # TTY Pipeline Bypass: Proxmox Community & Nag Screen Interactive Prompt
+    APPLY_PVE_PATCH=false
+    if [ "$IS_CRON" = false ] && command -v pveversion >/dev/null 2>&1; then
+        echo -e "\n${FG_PCH}${RST}${BG_PCH} PROXMOX DETECTED ${RST}${FG_PCH}${RST} Switch to the free no-subscription repository & disable the UI login warning? [Y/n]"
+        
+        # Read from the physical TTY to escape the bash pipeline lock
+        local ans=""
+        if [ -c /dev/tty ]; then
+            read -r -n 1 -s ans < /dev/tty || true
+        fi
+        
+        if [[ "$ans" =~ ^[Nn]$ ]]; then
+            APPLY_PVE_PATCH=false
+            echo -e "  ${FG_YLW}➔${RST} Keeping enterprise configurations."
+        else
+            APPLY_PVE_PATCH=true
+            echo -e "  ${FG_GRN}➔${RST} Patching to community configurations..."
+        fi
+        sleep 1
+    elif [ "$IS_CRON" = true ]; then
+        APPLY_PVE_PATCH=true # Assume patches are desired on background runs to prevent repo breaks
+    fi
 
     mkdir -p /usr/local/bin /etc/cron.weekly /root/.config
     
@@ -362,6 +388,15 @@ EOF
             continue
         fi
 
+        # 0. Deduplication & Cleanup
+        log_tui_step "${FG_PCH}" "SYNC" "Purging duplicate repository definitions"
+        if [ "$mode" = "pve-host" ] || [ "$mode" = "local" ]; then
+            rm -f /etc/apt/sources.list.d/nonfree.sources 2>/dev/null || true
+        elif [ "$mode" = "proxmox-lxc" ] && [ "$os_type" = "debian" ]; then
+            pct exec "$target" -- rm -f /etc/apt/sources.list.d/nonfree.sources 2>/dev/null || true
+        fi
+        log_tui_status "${FG_GRN}" "✓" "RESOLVED"
+
         # 1. Package Synchronization
         log_tui_step "${FG_YLW}" "REPO" "Refreshing system package architectures"
         
@@ -370,28 +405,35 @@ EOF
             killall -9 apt apt-get dpkg 2>/dev/null || true
             rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock
             
-            # Clean duplicate configurations aggressively
-            rm -f /etc/apt/sources.list.d/pve-no-sub.list 2>/dev/null || true
-            rm -f /etc/apt/sources.list.d/pve-enterprise.list 2>/dev/null || true
-            rm -f /etc/apt/sources.list.d/ceph.list 2>/dev/null || true
-            
-            # Smart patch: Modify deb822 files without creating duplicates
-            if [ -f /etc/apt/sources.list.d/proxmox.sources ]; then
-                sed -i 's/enterprise.proxmox.com/download.proxmox.com/g' /etc/apt/sources.list.d/proxmox.sources || true
-                sed -i 's/pve-enterprise/pve-no-subscription/g' /etc/apt/sources.list.d/proxmox.sources || true
-            fi
-            
-            # Only add standard fallback if we completely lack community repos
-            if ! grep -rq "pve-no-subscription" /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null; then
-                OS_CODENAME=$(grep "VERSION_CODENAME" /etc/os-release | cut -d'=' -f2 || echo "bookworm")
-                echo "deb http://download.proxmox.com/debian/pve $OS_CODENAME pve-no-subscription" > /etc/apt/sources.list.d/pve-no-sub.list
+            if [ "$APPLY_PVE_PATCH" = true ]; then
+                # Clean old list files entirely
+                rm -f /etc/apt/sources.list.d/pve-enterprise.list 2>/dev/null || true
+                rm -f /etc/apt/sources.list.d/pve-no-sub.list 2>/dev/null || true
+                rm -f /etc/apt/sources.list.d/ceph.list 2>/dev/null || true
+                
+                # Proxmox 8 Native deb822 formatting inject
+                if [ -f /etc/apt/sources.list.d/proxmox.sources ]; then
+                    sed -i 's/enterprise.proxmox.com/download.proxmox.com/g' /etc/apt/sources.list.d/proxmox.sources || true
+                    sed -i 's/pve-enterprise/pve-no-subscription/g' /etc/apt/sources.list.d/proxmox.sources || true
+                    sed -i 's/ceph-quincy enterprise/ceph-quincy no-subscription/g' /etc/apt/sources.list.d/proxmox.sources || true
+                    sed -i 's/ceph-squid enterprise/ceph-squid no-subscription/g' /etc/apt/sources.list.d/proxmox.sources || true
+                else
+                    OS_CODENAME=$(grep "VERSION_CODENAME" /etc/os-release | cut -d'=' -f2 || echo "bookworm")
+                    echo "deb http://download.proxmox.com/debian/pve $OS_CODENAME pve-no-subscription" > /etc/apt/sources.list.d/pve-no-sub.list
+                fi
+                
+                # UI Nag Removal Regex (Idempotent)
+                if [ -f /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js ]; then
+                    sed -Ezi.bak "s/(Ext.Msg.show\(\{\s+title: gettext\('No valid subscription'\),)/void\(\{ \/\/\1/g" /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js || true
+                    systemctl restart pveproxy.service || true
+                fi
             fi
             
             run_animated "$ERR_LOG" sh -c "dpkg --configure -a >> '$APT_LOG' 2>&1 && $APT_HEADLESS update >> '$APT_LOG' 2>&1 && $APT_HEADLESS dist-upgrade >> '$APT_LOG' 2>&1"
             cmd_status=$?
         elif [ "$os_type" = "debian" ]; then
             if [ "$mode" = "proxmox-lxc" ]; then
-                run_animated "$ERR_LOG" pct exec "$target" -- sh -c "killall -9 apt apt-get dpkg 2>/dev/null || true; rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock; dpkg --configure -a >> '$APT_LOG' 2>&1 && export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1; apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 -o Acquire::ForceIPv4=true -y update >> '$APT_LOG' 2>&1 && apt-get -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -y dist-upgrade >> '$APT_LOG' 2>&1" < /dev/null
+                run_animated "$ERR_LOG" pct exec "$target" -- sh -c "killall -9 apt apt-get dpkg 2>/dev/null || true; rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock; dpkg --configure -a >> '$APT_LOG' 2>&1 && export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1; apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=15 -y update >> '$APT_LOG' 2>&1 && apt-get -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -y dist-upgrade >> '$APT_LOG' 2>&1" < /dev/null
             else
                 killall -9 apt apt-get dpkg 2>/dev/null || true
                 rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock
