@@ -4,6 +4,7 @@
 set -Eeuo pipefail
 
 # --- CONFIGURATION ---
+SCRIPT_VERSION="2026-05-23T05:55Z-c228d24+ct-pkg-detect"
 INSTALL_PATH="/usr/local/bin/container-updater"
 CRON_PATH="/etc/cron.weekly/container-updater"
 GITHUB_RAW_URL="https://raw.githubusercontent.com/unknown6003/bdwy-server-init/refs/heads/main/auto-setup-bdwy.sh"
@@ -40,6 +41,7 @@ render_dashboard() {
     echo -e "${FG_MAG}┌────────────────────────────────────────────────────────┐${RST}"
     echo -e "${FG_MAG}│${RST} ${FG_BLU}BDWY SYSTEM INITIALIZATION ENGINE${RST}               ${FG_MAG}│${RST}"
     echo -e "${FG_MAG}└────────────────────────────────────────────────────────┘${RST}"
+    echo -e "  ${FG_DIM}Version: ${SCRIPT_VERSION}${RST}"
     echo -e "  ${FG_CYN}Target${RST}   : ${FG_GRN}${UI_TARGET}${RST}"
     echo -e "  ${FG_CYN}Phase${RST}    : ${FG_ORG}${UI_PHASE}${RST} ${FG_DIM}${spin}${RST}"
     echo -e "  ${FG_CYN}Action${RST}   : ${FG_YLW}${UI_ACTION}${RST}"
