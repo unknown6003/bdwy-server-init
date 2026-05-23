@@ -4,12 +4,12 @@
 set -Eeuo pipefail
 
 # --- ENFORCE CORE SYSTEM FILEPATH LAYOUTS ---
-# This executes globally instantly to prevent path rendering drops
 mkdir -p /usr/local/bin /etc/cron.weekly /root/.config
 
 # --- CONFIGURATION VARIABLES ---
 INSTALL_PATH="/usr/local/bin/container-updater"
 CRON_PATH="/etc/cron.weekly/container-updater"
+# Ensure this exact path matches your real public file on GitHub!
 GITHUB_RAW_URL="https://raw.githubusercontent.com/unknown6003/bdwy-server-init/refs/heads/main/auto-setup-bdwy.sh"
 
 STARSHIP_CONFIG_CONTENT=$(cat << 'EOF'
@@ -141,7 +141,7 @@ format = '[[ $symbol( $version) ](fg:crust bg:green)]($style)'
 [python]
 symbol = ""
 style = "bg:green"
-format = '[[ $symbol( $version) ](fg:crust bg:green)]($style)'
+format = '[[ $symbol( $version)(\(#$virtualenv\)) ](fg:crust bg:green)]($style)'
 
 [docker_context]
 symbol = ""
@@ -283,30 +283,29 @@ check_binary() {
     if [ "$type" = "proxmox-lxc" ]; then pct exec "$target" -- which "$binary" >/dev/null 2>&1; else command -v "$binary" >/dev/null 2>&1; fi
 }
 
-# --- BULLETPROOF LOCALIZATION REGISTRATION ---
+# --- DECOUPLED PIPELINE REGISTRATION ENGINE ---
 if [ ! -f "$0" ] || [ "$(basename "$0" 2>/dev/null)" = "bash" ]; then
     log_banner
     log_tui_step "${FG_PCH}" "INIT" "Writing core controller engine shell payload"
     
-    # We download the file directly into a temporary descriptor using an independent process link,
-    # then shift it into the newly verified binary path instantly. No pipeline locks.
-    if curl -sSL "$GITHUB_RAW_URL" -o /tmp/updater-bin.tmp; then
+    # -f forces curl to return an error status on HTTP 404 instead of saving HTML
+    if curl -fsSL "$GITHUB_RAW_URL" -o /tmp/updater-bin.tmp; then
         mv /tmp/updater-bin.tmp "$INSTALL_PATH"
         chmod +x "$INSTALL_PATH"
         log_tui_status "${FG_GRN}" "✓" "DONE"
-    else
-        log_tui_status "${FG_RED}" "✘" "NETWORK ERROR"
-        exit 1
-    fi
-
-    log_tui_step "${FG_PCH}" "CRON" "Anchoring periodic weekly execution wrappers"
-    cat << EOF > "$CRON_PATH"
+        
+        log_tui_step "${FG_PCH}" "CRON" "Anchoring periodic weekly execution wrappers"
+        cat << EOF > "$CRON_PATH"
 #!/bin/sh
-curl -sSL "$GITHUB_RAW_URL" -o "$INSTALL_PATH" && chmod +x "$INSTALL_PATH"
+curl -fsSL "$GITHUB_RAW_URL" -o "$INSTALL_PATH" && chmod +x "$INSTALL_PATH"
 "$INSTALL_PATH" --cron
 EOF
-    chmod +x "$CRON_PATH"
-    log_tui_status "${FG_GRN}" "✓" "READY"
+        chmod +x "$CRON_PATH"
+        log_tui_status "${FG_GRN}" "✓" "READY"
+    else
+        # If GitHub hits a 404, notify but DO NOT EXIT. Fallback to inline processing immediately.
+        log_tui_status "${FG_RED}" "⚠" "FALLBACK ACTIVE (URL 404)"
+    fi
 fi
 
 # --- PLATFORM IDENTIFICATION PASS ---
@@ -330,8 +329,6 @@ fi
 total_targets=${#targets[@]}
 
 # --- MAIN TUI CORE RUNTIME ---
-log_banner
-
 for i in "${!targets[@]}"; do
     target="${targets[$i]}"
     mode="${target_modes[$i]}"
