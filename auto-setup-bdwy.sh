@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 
 # --- MISSION CRITICAL ENCLOSURE BLOCK ---
+# Wrapping the script in {} forces bash to read the entire file into memory before
+# executing line 1. This prevents 'curl | bash' from crashing due to stdin drain.
 {
 set -Eeuo pipefail
 
@@ -244,39 +246,49 @@ log_tui_section() {
 
 log_tui_step() {
     local status_color="$1" tag="$2" msg="$3"
-    printf "  ${status_color}${RST}${status_color}${tag}${RST}${status_color}${RST} %-50s" "$msg"
+    printf "  ${status_color}${RST}${status_color}${tag}${RST}${status_color}${RST} %-50s\n" "$msg"
 }
 
 log_tui_status() {
     local color="$1" symbol="$2" text="$3"
-    echo -e "[${color}${symbol}${RST}] ${color}${text}${RST}"
+    printf "\033[1A\033[65C[${color}${symbol}${RST}] ${color}${text}${RST}\n"
 }
 
-show_tui_progress() {
-    local percent=$1
-    local bar_len=24
-    local filled=$(( percent * bar_len / 100 ))
-    local empty=$(( bar_len - filled ))
-    printf "\r  ${FG_SAP}${RST}${BG_SAP} PROGRESS ${RST}${FG_SAP}${RST} ["
-    printf "${FG_SAP}%${filled}s${RST}" "" | tr ' ' '█'
-    printf "%${empty}s" "" | tr ' ' ' '
-    printf "] %d%%" "$percent"
-    if [ "$percent" -eq 100 ] || [ "$percent" -eq 5 ]; then printf "\n"; fi
+# Advanced PID Spinner for concurrent visual tracking
+run_animated() {
+    local log_target="$1"
+    shift
+    
+    "$@" >> "$log_target" 2>&1 &
+    local pid=$!
+    
+    local frames=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
+    local i=0
+    
+    tput civis || true 
+    
+    while kill -0 "$pid" 2>/dev/null; do
+        printf "\r  ${FG_SAP}${RST}${BG_SAP} ACTIVITY ${RST}${FG_SAP}${RST} ${FG_YLW}%s${RST} Processing in background..." "${frames[i]}"
+        i=$(( (i + 1) % 10 ))
+        sleep 0.1
+    done
+    
+    tput cnorm || true
+    printf "\r\033[K"  
+    
+    wait "$pid"
+    return $?
 }
 
 # --- UNATTENDED NON-INTERACTIVE CALL CONSTANTS ---
 export DEBIAN_FRONTEND=noninteractive
 export APT_LISTCHANGES_FRONTEND=none
-# CRITICAL: Prevent debian 'needrestart' from hijacking the console and hanging infinitely
+# Force disable 'needrestart' hijacking the console
 export NEEDRESTART_MODE=a
 export NEEDRESTART_SUSPEND=1
 
+# Mission Critical: apt-get guarantees stable, headless, non-interactive execution
 APT_HEADLESS="apt-get -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Dpkg::Use-Pty=0 -y"
-
-run_cmd() {
-    local type="$1" target="$2"; shift 2
-    if [ "$type" = "proxmox-lxc" ]; then pct exec "$target" -- sh -c "$*" < /dev/null; else sh -c "$*" < /dev/null; fi
-}
 
 check_file() {
     local type="$1" target="$2" path="$3"
@@ -290,12 +302,12 @@ check_binary() {
 
 # --- MAIN EXECUTION ROUTINE ---
 main() {
-    # Clean previous run logs
     > "$APT_LOG"
     > "$ERR_LOG"
 
     mkdir -p /usr/local/bin /etc/cron.weekly /root/.config
     
+    # Self-install mechanics for 'curl | bash' invocations
     if [ "${0##*/}" = "bash" ] || [ ! -f "$INSTALL_PATH" ]; then
         log_banner
         log_tui_step "${FG_PCH}" "INIT" "Writing core controller engine shell payload"
@@ -318,6 +330,7 @@ EOF
         fi
     fi
 
+    # Target Detection Matrix
     targets=()
     target_modes=()
 
@@ -336,6 +349,7 @@ EOF
 
     total_targets=${#targets[@]}
 
+    # Main Deployment Loop
     for i in "${!targets[@]}"; do
         target="${targets[$i]}"
         mode="${target_modes[$i]}"
@@ -356,44 +370,34 @@ EOF
         fi
 
         # 1. Package Synchronization
-        show_tui_progress 20
         log_tui_step "${FG_YLW}" "REPO" "Refreshing system package architectures"
         
         set +e 
         if [ "$mode" = "pve-host" ]; then
-            # CRITICAL FIX: Kill stuck apt processes and wipe locks from previous frozen runs
             killall -9 apt apt-get dpkg 2>/dev/null || true
             rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock
-            dpkg --configure -a >> "$APT_LOG" 2>&1
             
             OS_CODENAME=$(grep "VERSION_CODENAME" /etc/os-release | cut -d'=' -f2 || echo "bookworm")
-            
             rm -f /etc/apt/sources.list.d/pve-enterprise.list
             rm -f /etc/apt/sources.list.d/ceph.list
             echo "deb http://download.proxmox.com/debian/pve $OS_CODENAME pve-no-subscription" > /etc/apt/sources.list.d/pve-no-sub.list
             
-            # Re-routed output so we can debug if it hangs again
-            $APT_HEADLESS update >> "$APT_LOG" 2> "$ERR_LOG"
-            $APT_HEADLESS dist-upgrade >> "$APT_LOG" 2>> "$ERR_LOG"
+            run_animated "$ERR_LOG" sh -c "dpkg --configure -a >> '$APT_LOG' 2>&1 && $APT_HEADLESS update >> '$APT_LOG' 2>&1 && $APT_HEADLESS dist-upgrade >> '$APT_LOG' 2>&1"
             cmd_status=$?
         elif [ "$os_type" = "debian" ]; then
             if [ "$mode" = "proxmox-lxc" ]; then
-                pct exec "$target" -- sh -c "killall -9 apt apt-get dpkg 2>/dev/null || true; rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock; dpkg --configure -a" < /dev/null >> "$APT_LOG" 2>&1
-                pct exec "$target" -- sh -c "export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1; apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=15 -y update && apt-get -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -y dist-upgrade" < /dev/null >> "$APT_LOG" 2>> "$ERR_LOG"
+                run_animated "$ERR_LOG" pct exec "$target" -- sh -c "killall -9 apt apt-get dpkg 2>/dev/null || true; rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock; dpkg --configure -a >> '$APT_LOG' 2>&1 && export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1; apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=15 -y update >> '$APT_LOG' 2>&1 && apt-get -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -y dist-upgrade >> '$APT_LOG' 2>&1" < /dev/null
             else
                 killall -9 apt apt-get dpkg 2>/dev/null || true
                 rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock
-                dpkg --configure -a >> "$APT_LOG" 2>&1
-                $APT_HEADLESS update >> "$APT_LOG" 2> "$ERR_LOG"
-                $APT_HEADLESS dist-upgrade >> "$APT_LOG" 2>> "$ERR_LOG"
+                run_animated "$ERR_LOG" sh -c "dpkg --configure -a >> '$APT_LOG' 2>&1 && $APT_HEADLESS update >> '$APT_LOG' 2>&1 && $APT_HEADLESS dist-upgrade >> '$APT_LOG' 2>&1"
             fi
             cmd_status=$?
         elif [ "$os_type" = "alpine" ]; then
             if [ "$mode" = "proxmox-lxc" ]; then
-                pct exec "$target" -- sh -c "apk update && apk upgrade" < /dev/null >> "$APT_LOG" 2>> "$ERR_LOG"
+                run_animated "$ERR_LOG" pct exec "$target" -- sh -c "apk update >> '$APT_LOG' 2>&1 && apk upgrade >> '$APT_LOG' 2>&1" < /dev/null
             else
-                apk update >> "$APT_LOG" 2>> "$ERR_LOG"
-                apk upgrade >> "$APT_LOG" 2>> "$ERR_LOG"
+                run_animated "$ERR_LOG" sh -c "apk update >> '$APT_LOG' 2>&1 && apk upgrade >> '$APT_LOG' 2>&1"
             fi
             cmd_status=$?
         fi
@@ -402,65 +406,80 @@ EOF
         if [ "$cmd_status" -ne 0 ]; then
             log_tui_status "${FG_RED}" "✘" "CRASHED"
             echo -e "\n${FG_RED}┌─── CRITICAL SYSTEM DIAGNOSTIC ERROR LOG ───────────────────────────────┐${RST}"
-            cat "$ERR_LOG" | sed 's/^/  /' || echo "  Unknown system network stall."
+            cat "$ERR_LOG" | sed 's/^/  /' || echo "  Unknown structural system network stall."
             echo -e "${FG_RED}└────────────────────────────────────────────────────────────────────────┘${RST}"
-            echo -e "${FG_YLW}Detailed output saved to: $APT_LOG${RST}"
+            echo -e "${FG_YLW}Detailed full trace saved to: $APT_LOG${RST}"
             exit 1
         fi
         log_tui_status "${FG_GRN}" "✓" "UPDATED"
 
-        # 2. Unattended Engine Setup
-        show_tui_progress 40
+        # 2. Automated Deep Space Cleansing (Fix for Boot Partition / Storage Spills)
+        log_tui_step "${FG_SAP}" "WASH" "Executing orphaned package and cache destruct sequences"
+        set +e
+        if [ "$os_type" = "debian" ] || [ "$mode" = "pve-host" ]; then
+            if [ "$mode" = "proxmox-lxc" ]; then
+                run_animated "$ERR_LOG" pct exec "$target" -- sh -c "export DEBIAN_FRONTEND=noninteractive; apt-get -y autoremove --purge >> '$APT_LOG' 2>&1 && apt-get clean >> '$APT_LOG' 2>&1" < /dev/null
+            else
+                run_animated "$ERR_LOG" sh -c "$APT_HEADLESS autoremove --purge >> '$APT_LOG' 2>&1 && $APT_HEADLESS clean >> '$APT_LOG' 2>&1"
+            fi
+        elif [ "$os_type" = "alpine" ]; then
+            if [ "$mode" = "proxmox-lxc" ]; then
+                run_animated "$ERR_LOG" pct exec "$target" -- sh -c "apk cache clean >> '$APT_LOG' 2>&1" < /dev/null
+            else
+                run_animated "$ERR_LOG" sh -c "apk cache clean >> '$APT_LOG' 2>&1"
+            fi
+        fi
+        set -e
+        log_tui_status "${FG_GRN}" "✓" "CLEANED"
+
+        # 3. Unattended Engine Setup
         log_tui_step "${FG_YLW}" "AUTO" "Injecting unattended processing background engines"
         if [ "$os_type" = "debian" ] || [ "$mode" = "pve-host" ]; then
             if [ "$mode" = "pve-host" ] || [ "$mode" = "local" ]; then
-                $APT_HEADLESS install unattended-upgrades apt-listchanges >> "$APT_LOG" 2>&1
-                echo "unattended-upgrades unattended-upgrades/enable_auto_updates boolean true" | debconf-set-selections >> "$APT_LOG" 2>&1
-                dpkg-reconfigure -f noninteractive unattended-upgrades >> "$APT_LOG" 2>&1
+                run_animated "$ERR_LOG" sh -c "$APT_HEADLESS install unattended-upgrades apt-listchanges >> '$APT_LOG' 2>&1 && echo 'unattended-upgrades unattended-upgrades/enable_auto_updates boolean true' | debconf-set-selections >> '$APT_LOG' 2>&1 && dpkg-reconfigure -f noninteractive unattended-upgrades >> '$APT_LOG' 2>&1"
             elif [ "$mode" = "proxmox-lxc" ]; then
-                pct exec "$target" -- sh -c "export DEBIAN_FRONTEND=noninteractive; apt-get -y install unattended-upgrades apt-listchanges" < /dev/null >> "$APT_LOG" 2>&1
-                pct exec "$target" -- sh -c "echo 'unattended-upgrades unattended-upgrades/enable_auto_updates boolean true' | debconf-set-selections" < /dev/null >> "$APT_LOG" 2>&1
-                pct exec "$target" -- sh -c "export DEBIAN_FRONTEND=noninteractive; dpkg-reconfigure -f noninteractive unattended-upgrades" < /dev/null >> "$APT_LOG" 2>&1
+                run_animated "$ERR_LOG" pct exec "$target" -- sh -c "export DEBIAN_FRONTEND=noninteractive; apt-get -y install unattended-upgrades apt-listchanges >> '$APT_LOG' 2>&1 && echo 'unattended-upgrades unattended-upgrades/enable_auto_updates boolean true' | debconf-set-selections >> '$APT_LOG' 2>&1 && dpkg-reconfigure -f noninteractive unattended-upgrades >> '$APT_LOG' 2>&1" < /dev/null
             fi
         elif [ "$os_type" = "alpine" ]; then
-            run_cmd "$mode" "$target" "apk add cronie && rc-update add cronie default || true && rc-service cronie start || true" >> "$APT_LOG" 2>&1
-            cron_script="#!/bin/sh\napk update && apk upgrade"
+            run_animated "$ERR_LOG" sh -c "if [ '$mode' = 'proxmox-lxc' ]; then pct exec '$target' -- sh -c 'apk add cronie && rc-update add cronie default || true && rc-service cronie start || true' >> '$APT_LOG' 2>&1; else apk add cronie && rc-update add cronie default || true && rc-service cronie start || true >> '$APT_LOG' 2>&1; fi"
+            cron_script="#!/bin/sh\napk update && apk upgrade && apk cache clean"
             if [ "$mode" = "proxmox-lxc" ]; then echo -e "$cron_script" | pct exec "$target" -- tee /etc/periodic/daily/apk-upgrade > /dev/null; else echo -e "$cron_script" | tee /etc/periodic/daily/apk-upgrade > /dev/null; fi
-            run_cmd "$mode" "$target" "chmod +x /etc/periodic/daily/apk-upgrade"
+            if [ "$mode" = "proxmox-lxc" ]; then pct exec "$target" -- chmod +x /etc/periodic/daily/apk-upgrade < /dev/null; else chmod +x /etc/periodic/daily/apk-upgrade < /dev/null; fi
         fi
         log_tui_status "${FG_GRN}" "✓" "ACTIVE"
 
-        # 3. Starship Configs
-        show_tui_progress 60
+        # 4. Starship Configs
         log_tui_step "${FG_PCH}" "SHSH" "Verifying localized Starship engine prompt presence"
         if ! check_binary "$mode" "$target" "starship"; then
-            if [ "$os_type" = "debian" ]; then run_cmd "$mode" "$target" "apt-get install -y curl" >> "$APT_LOG" 2>&1; fi
-            if [ "$os_type" = "alpine" ]; then run_cmd "$mode" "$target" "apk add curl" >> "$APT_LOG" 2>&1; fi
-            run_cmd "$mode" "$target" "curl -sS https://starship.rs/install.sh | sh -s -- -y" >> "$APT_LOG" 2>&1
+            if [ "$os_type" = "debian" ]; then 
+                if [ "$mode" = "proxmox-lxc" ]; then run_animated "$ERR_LOG" pct exec "$target" -- sh -c "apt-get install -y curl >> '$APT_LOG' 2>&1" < /dev/null; else run_animated "$ERR_LOG" sh -c "apt-get install -y curl >> '$APT_LOG' 2>&1"; fi
+            fi
+            if [ "$os_type" = "alpine" ]; then 
+                if [ "$mode" = "proxmox-lxc" ]; then run_animated "$ERR_LOG" pct exec "$target" -- sh -c "apk add curl >> '$APT_LOG' 2>&1" < /dev/null; else run_animated "$ERR_LOG" sh -c "apk add curl >> '$APT_LOG' 2>&1"; fi
+            fi
+            if [ "$mode" = "proxmox-lxc" ]; then run_animated "$ERR_LOG" pct exec "$target" -- sh -c "curl -sS https://starship.rs/install.sh | sh -s -- -y >> '$APT_LOG' 2>&1" < /dev/null; else run_animated "$ERR_LOG" sh -c "curl -sS https://starship.rs/install.sh | sh -s -- -y >> '$APT_LOG' 2>&1"; fi
             log_tui_status "${FG_GRN}" "✓" "INSTALLED"
         else
             log_tui_status "${FG_SAP}" "ℹ" "EXISTS"
         fi
 
-        # 4. Inject Configuration Profiles
-        show_tui_progress 80
+        # 5. Inject Configuration Profiles
         log_tui_step "${FG_PCH}" "CONF" "Deploying visual parameters and environment variables"
-        run_cmd "$mode" "$target" "mkdir -p /root/.config"
+        if [ "$mode" = "proxmox-lxc" ]; then pct exec "$target" -- mkdir -p /root/.config < /dev/null; else mkdir -p /root/.config < /dev/null; fi
         if [ "$mode" = "proxmox-lxc" ]; then echo "$STARSHIP_CONFIG_CONTENT" | pct exec "$target" -- tee /root/.config/starship.toml > /dev/null; else echo "$STARSHIP_CONFIG_CONTENT" | tee /root/.config/starship.toml > /dev/null; fi
 
         if check_file "$mode" "$target" "/root/.bashrc"; then
-            run_cmd "$mode" "$target" "grep -q 'starship init bash' /root/.bashrc || echo 'eval \"\$(starship init bash)\"' >> /root/.bashrc"
+            if [ "$mode" = "proxmox-lxc" ]; then pct exec "$target" -- sh -c "grep -q 'starship init bash' /root/.bashrc || echo 'eval \"\$(starship init bash)\"' >> /root/.bashrc" < /dev/null; else sh -c "grep -q 'starship init bash' /root/.bashrc || echo 'eval \"\$(starship init bash)\"' >> /root/.bashrc" < /dev/null; fi
         fi
         if check_file "$mode" "$target" "/root/.zshrc"; then
-            run_cmd "$mode" "$target" "grep -q 'starship init zsh' /root/.zshrc || echo 'eval \"\$(starship init zsh)\"' >> /root/.zshrc"
+            if [ "$mode" = "proxmox-lxc" ]; then pct exec "$target" -- sh -c "grep -q 'starship init zsh' /root/.zshrc || echo 'eval \"\$(starship init zsh)\"' >> /root/.zshrc" < /dev/null; else sh -c "grep -q 'starship init zsh' /root/.zshrc || echo 'eval \"\$(starship init zsh)\"' >> /root/.zshrc" < /dev/null; fi
         fi
         if [ "$os_type" = "alpine" ] && check_file "$mode" "$target" "/root/.profile"; then
-            run_cmd "$mode" "$target" "grep -q 'starship init' /root/.profile || echo 'eval \"\$(starship init posix)\"' >> /root/.profile"
+            if [ "$mode" = "proxmox-lxc" ]; then pct exec "$target" -- sh -c "grep -q 'starship init' /root/.profile || echo 'eval \"\$(starship init posix)\"' >> /root/.profile" < /dev/null; else sh -c "grep -q 'starship init' /root/.profile || echo 'eval \"\$(starship init posix)\"' >> /root/.profile" < /dev/null; fi
         fi
         log_tui_status "${FG_GRN}" "✓" "CONFIGURED"
 
-        # 5. Application Upgrades Logic
-        show_tui_progress 100
+        # 6. Application Upgrades Logic
         log_tui_step "${FG_SAP}" "DCKR" "Processing application container lifecycle updates"
         if check_binary "$mode" "$target" "docker"; then
             if [ "$mode" = "proxmox-lxc" ]; then compose_files=$(pct exec "$target" -- find / -maxdepth 4 \( -path /proc -o -path /sys -o -path /dev \) -prune -o \( -name "docker-compose.yml" -o -name "compose.yml" \) -print 2>/dev/null || true); else compose_files=$(find / -maxdepth 4 \( -path /proc -o -path /sys -o -path /dev \) -prune -o \( -name "docker-compose.yml" -o -name "compose.yml" \) -print 2>/dev/null || true); fi
@@ -468,7 +487,11 @@ EOF
                 while read -r compose_path; do
                     [ -z "$compose_path" ] && continue
                     compose_dir=$(dirname "$compose_path")
-                    run_cmd "$mode" "$target" "if docker compose version >/dev/null 2>&1; then cd '$compose_dir' && docker compose pull && docker compose up -d; elif docker-compose version >/dev/null 2>&1; then cd '$compose_dir' && docker-compose pull && docker-compose up -d; fi" >> "$APT_LOG" 2>&1
+                    if [ "$mode" = "proxmox-lxc" ]; then
+                        run_animated "$ERR_LOG" pct exec "$target" -- sh -c "if docker compose version >/dev/null 2>&1; then cd '$compose_dir' && docker compose pull && docker compose up -d; elif docker-compose version >/dev/null 2>&1; then cd '$compose_dir' && docker-compose pull && docker-compose up -d; fi >> '$APT_LOG' 2>&1" < /dev/null
+                    else
+                        run_animated "$ERR_LOG" sh -c "if docker compose version >/dev/null 2>&1; then cd '$compose_dir' && docker compose pull && docker compose up -d; elif docker-compose version >/dev/null 2>&1; then cd '$compose_dir' && docker-compose pull && docker-compose up -d; fi >> '$APT_LOG' 2>&1"
+                    fi
                 done <<< "$compose_files"
                 log_tui_status "${FG_GRN}" "✓" "DOCKER COMS"
             else
@@ -487,5 +510,6 @@ EOF
 }
 
 # --- EXECUTION TRIGGER ---
+# Routing /dev/null fully isolates the script execution from the incoming web pipeline
 main "$@" < /dev/null
 }
