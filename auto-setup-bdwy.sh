@@ -4,7 +4,7 @@
 set -Eeuo pipefail
 
 # --- CONFIGURATION ---
-SCRIPT_VERSION="2026-05-23T06:35Z-starship-binary-fallback"
+SCRIPT_VERSION="2026-05-23T06:50Z-starship-no-sh-installer"
 INSTALL_PATH="/usr/local/bin/container-updater"
 CRON_PATH="/etc/cron.weekly/container-updater"
 GITHUB_RAW_URL="https://raw.githubusercontent.com/unknown6003/bdwy-server-init/refs/heads/main/auto-setup-bdwy.sh"
@@ -682,9 +682,25 @@ install_starship_container() {
             exec_live "pct exec $ctid -- sh -lc '
 if command -v starship >/dev/null 2>&1; then exit 0; fi
 if apt-get update -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=5 && apt-get install -y starship; then exit 0; fi
-if command -v curl >/dev/null 2>&1; then curl -fsSL https://starship.rs/install.sh | sh -s -- -y && exit 0; fi
-if command -v wget >/dev/null 2>&1; then wget -qO- https://starship.rs/install.sh | sh -s -- -y && exit 0; fi
-apt-get install -y curl ca-certificates && curl -fsSL https://starship.rs/install.sh | sh -s -- -y
+ARCH=\"\$(uname -m)\"
+case \"\$ARCH\" in
+  x86_64) STAR_ARCH=\"x86_64-unknown-linux-gnu\" ;;
+  aarch64) STAR_ARCH=\"aarch64-unknown-linux-musl\" ;;
+  *) STAR_ARCH=\"\" ;;
+esac
+if [ -n \"\$STAR_ARCH\" ]; then
+  TMP=\"\$(mktemp -d)\"
+  URL=\"https://github.com/starship/starship/releases/latest/download/starship-\${STAR_ARCH}.tar.gz\"
+  if command -v curl >/dev/null 2>&1; then curl -fsSL \"\$URL\" -o \"\$TMP/starship.tgz\" || true; fi
+  if [ ! -s \"\$TMP/starship.tgz\" ] && command -v wget >/dev/null 2>&1; then wget -qO \"\$TMP/starship.tgz\" \"\$URL\" || true; fi
+  if [ -s \"\$TMP/starship.tgz\" ] && tar -xzf \"\$TMP/starship.tgz\" -C \"\$TMP\" && [ -f \"\$TMP/starship\" ]; then
+    install -m 0755 \"\$TMP/starship\" /usr/local/bin/starship
+    rm -rf \"\$TMP\"
+    exit 0
+  fi
+  rm -rf \"\$TMP\"
+fi
+exit 1
 '"
             ;;
         apk)
@@ -715,9 +731,21 @@ if [ -n \"\$STAR_ARCH\" ]; then
 fi
 
 if apk add --no-cache starship; then exit 0; fi
-if command -v curl >/dev/null 2>&1; then curl -fsSL https://starship.rs/install.sh | sh -s -- -y && exit 0; fi
-if command -v wget >/dev/null 2>&1; then wget -qO- https://starship.rs/install.sh | sh -s -- -y && exit 0; fi
-apk add --no-cache curl ca-certificates && curl -fsSL https://starship.rs/install.sh | sh -s -- -y
+if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then
+  if [ -n \"\$STAR_ARCH\" ]; then
+    TMP=\"\$(mktemp -d)\"
+    URL=\"https://github.com/starship/starship/releases/latest/download/starship-\${STAR_ARCH}.tar.gz\"
+    if command -v curl >/dev/null 2>&1; then curl -fsSL \"\$URL\" -o \"\$TMP/starship.tgz\" || true; fi
+    if [ ! -s \"\$TMP/starship.tgz\" ] && command -v wget >/dev/null 2>&1; then wget -qO \"\$TMP/starship.tgz\" \"\$URL\" || true; fi
+    if [ -s \"\$TMP/starship.tgz\" ] && tar -xzf \"\$TMP/starship.tgz\" -C \"\$TMP\" && [ -f \"\$TMP/starship\" ]; then
+      install -m 0755 \"\$TMP/starship\" /usr/local/bin/starship
+      rm -rf \"\$TMP\"
+      exit 0
+    fi
+    rm -rf \"\$TMP\"
+  fi
+fi
+exit 1
 '"
             ;;
         *)
