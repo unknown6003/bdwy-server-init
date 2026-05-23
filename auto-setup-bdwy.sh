@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 
 # --- MISSION CRITICAL ENCLOSURE BLOCK ---
-# Wrapping the script in {} forces bash to read the entire file into memory before
-# executing line 1. This prevents 'curl | bash' from crashing due to stdin drain.
 {
 set -Eeuo pipefail
 
@@ -254,7 +252,6 @@ log_tui_status() {
     printf "\033[1A\033[65C[${color}${symbol}${RST}] ${color}${text}${RST}\n"
 }
 
-# Advanced PID Spinner for concurrent visual tracking
 run_animated() {
     local log_target="$1"
     shift
@@ -283,12 +280,11 @@ run_animated() {
 # --- UNATTENDED NON-INTERACTIVE CALL CONSTANTS ---
 export DEBIAN_FRONTEND=noninteractive
 export APT_LISTCHANGES_FRONTEND=none
-# Force disable 'needrestart' hijacking the console
 export NEEDRESTART_MODE=a
 export NEEDRESTART_SUSPEND=1
 
-# Mission Critical: apt-get guarantees stable, headless, non-interactive execution
-APT_HEADLESS="apt-get -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Dpkg::Use-Pty=0 -y"
+# Hardened APT parameters: Forces IPv4 to skip broken IPv6 DNS stalls, sets 10s cutoff for HTTP/HTTPS
+APT_HEADLESS="apt-get -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o Acquire::Retries=3 -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 -o Acquire::ForceIPv4=true -o Dpkg::Use-Pty=0 -y"
 
 check_file() {
     local type="$1" target="$2" path="$3"
@@ -307,7 +303,6 @@ main() {
 
     mkdir -p /usr/local/bin /etc/cron.weekly /root/.config
     
-    # Self-install mechanics for 'curl | bash' invocations
     if [ "${0##*/}" = "bash" ] || [ ! -f "$INSTALL_PATH" ]; then
         log_banner
         log_tui_step "${FG_PCH}" "INIT" "Writing core controller engine shell payload"
@@ -330,7 +325,6 @@ EOF
         fi
     fi
 
-    # Target Detection Matrix
     targets=()
     target_modes=()
 
@@ -349,7 +343,6 @@ EOF
 
     total_targets=${#targets[@]}
 
-    # Main Deployment Loop
     for i in "${!targets[@]}"; do
         target="${targets[$i]}"
         mode="${target_modes[$i]}"
@@ -377,16 +370,28 @@ EOF
             killall -9 apt apt-get dpkg 2>/dev/null || true
             rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock
             
-            OS_CODENAME=$(grep "VERSION_CODENAME" /etc/os-release | cut -d'=' -f2 || echo "bookworm")
-            rm -f /etc/apt/sources.list.d/pve-enterprise.list
-            rm -f /etc/apt/sources.list.d/ceph.list
-            echo "deb http://download.proxmox.com/debian/pve $OS_CODENAME pve-no-subscription" > /etc/apt/sources.list.d/pve-no-sub.list
+            # Clean duplicate configurations aggressively
+            rm -f /etc/apt/sources.list.d/pve-no-sub.list 2>/dev/null || true
+            rm -f /etc/apt/sources.list.d/pve-enterprise.list 2>/dev/null || true
+            rm -f /etc/apt/sources.list.d/ceph.list 2>/dev/null || true
+            
+            # Smart patch: Modify deb822 files without creating duplicates
+            if [ -f /etc/apt/sources.list.d/proxmox.sources ]; then
+                sed -i 's/enterprise.proxmox.com/download.proxmox.com/g' /etc/apt/sources.list.d/proxmox.sources || true
+                sed -i 's/pve-enterprise/pve-no-subscription/g' /etc/apt/sources.list.d/proxmox.sources || true
+            fi
+            
+            # Only add standard fallback if we completely lack community repos
+            if ! grep -rq "pve-no-subscription" /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null; then
+                OS_CODENAME=$(grep "VERSION_CODENAME" /etc/os-release | cut -d'=' -f2 || echo "bookworm")
+                echo "deb http://download.proxmox.com/debian/pve $OS_CODENAME pve-no-subscription" > /etc/apt/sources.list.d/pve-no-sub.list
+            fi
             
             run_animated "$ERR_LOG" sh -c "dpkg --configure -a >> '$APT_LOG' 2>&1 && $APT_HEADLESS update >> '$APT_LOG' 2>&1 && $APT_HEADLESS dist-upgrade >> '$APT_LOG' 2>&1"
             cmd_status=$?
         elif [ "$os_type" = "debian" ]; then
             if [ "$mode" = "proxmox-lxc" ]; then
-                run_animated "$ERR_LOG" pct exec "$target" -- sh -c "killall -9 apt apt-get dpkg 2>/dev/null || true; rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock; dpkg --configure -a >> '$APT_LOG' 2>&1 && export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1; apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=15 -y update >> '$APT_LOG' 2>&1 && apt-get -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -y dist-upgrade >> '$APT_LOG' 2>&1" < /dev/null
+                run_animated "$ERR_LOG" pct exec "$target" -- sh -c "killall -9 apt apt-get dpkg 2>/dev/null || true; rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock; dpkg --configure -a >> '$APT_LOG' 2>&1 && export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1; apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 -o Acquire::ForceIPv4=true -y update >> '$APT_LOG' 2>&1 && apt-get -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -y dist-upgrade >> '$APT_LOG' 2>&1" < /dev/null
             else
                 killall -9 apt apt-get dpkg 2>/dev/null || true
                 rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock
@@ -413,7 +418,7 @@ EOF
         fi
         log_tui_status "${FG_GRN}" "✓" "UPDATED"
 
-        # 2. Automated Deep Space Cleansing (Fix for Boot Partition / Storage Spills)
+        # 2. Automated Deep Space Cleansing
         log_tui_step "${FG_SAP}" "WASH" "Executing orphaned package and cache destruct sequences"
         set +e
         if [ "$os_type" = "debian" ] || [ "$mode" = "pve-host" ]; then
@@ -510,6 +515,5 @@ EOF
 }
 
 # --- EXECUTION TRIGGER ---
-# Routing /dev/null fully isolates the script execution from the incoming web pipeline
 main "$@" < /dev/null
 }
