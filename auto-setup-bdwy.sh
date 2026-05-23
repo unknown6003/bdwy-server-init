@@ -4,10 +4,43 @@
 set -Eeuo pipefail
 
 # --- CONFIGURATION ---
-SCRIPT_VERSION="2026-05-23T05:55Z-c228d24+ct-pkg-detect"
+SCRIPT_VERSION="2026-05-23T06:20Z-starship-and-ct-skip-fix"
 INSTALL_PATH="/usr/local/bin/container-updater"
 CRON_PATH="/etc/cron.weekly/container-updater"
 GITHUB_RAW_URL="https://raw.githubusercontent.com/unknown6003/bdwy-server-init/refs/heads/main/auto-setup-bdwy.sh"
+STARSHIP_TOML_CONTENT='format = """
+$username$hostname$directory$git_branch$git_status$line_break
+$character
+"""
+
+[character]
+success_symbol = "[>](bold green)"
+error_symbol = "[>](bold red)"
+vimcmd_symbol = "[<](bold yellow)"
+
+[directory]
+truncation_length = 4
+truncate_to_repo = false
+style = "bold cyan"
+
+[git_branch]
+symbol = "git:"
+style = "bold purple"
+
+[git_status]
+style = "bold yellow"
+
+[username]
+show_always = true
+style_user = "bold green"
+style_root = "bold red"
+format = "[$user]($style)@"
+
+[hostname]
+ssh_only = false
+style = "bold blue"
+format = "[$hostname]($style) "
+'
 
 # --- TUI ENGINE ---
 FG_CYN="\e[38;5;117m"
@@ -305,6 +338,59 @@ detect_container_pkg_manager() {
     '
 }
 
+ensure_line_in_file() {
+    local line="$1"
+    local file="$2"
+    touch "$file"
+    grep -Fqx "$line" "$file" || echo "$line" >> "$file"
+}
+
+install_starship_host() {
+    if command -v starship >/dev/null 2>&1; then
+        return 0
+    fi
+    apt-get install -y starship >/dev/null 2>&1 || {
+        curl -fsSL https://starship.rs/install.sh | sh -s -- -y >/dev/null 2>&1
+    }
+}
+
+configure_starship_host() {
+    mkdir -p /root/.config
+    cat > /root/.config/starship.toml <<EOF
+${STARSHIP_TOML_CONTENT}
+EOF
+    ensure_line_in_file 'eval "$(starship init bash)"' /root/.bashrc
+    ensure_line_in_file 'eval "$(starship init zsh)"' /root/.zshrc
+}
+
+configure_starship_container() {
+    local ctid="$1"
+    pct exec "$ctid" -- sh -lc "
+mkdir -p /root/.config
+cat > /root/.config/starship.toml <<'EOF'
+${STARSHIP_TOML_CONTENT}
+EOF
+touch /root/.bashrc /root/.zshrc
+grep -Fqx 'eval \"\$(starship init bash)\"' /root/.bashrc || echo 'eval \"\$(starship init bash)\"' >> /root/.bashrc
+grep -Fqx 'eval \"\$(starship init zsh)\"' /root/.zshrc || echo 'eval \"\$(starship init zsh)\"' >> /root/.zshrc
+"
+}
+
+install_starship_container() {
+    local ctid="$1"
+    local pkg_mgr="$2"
+    case "$pkg_mgr" in
+        apt) exec_live "pct exec $ctid -- sh -lc 'apt-get update -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=5 && apt-get install -y starship'" ;;
+        apk) exec_live "pct exec $ctid -- apk add --no-cache starship" ;;
+        dnf) exec_live "pct exec $ctid -- dnf -y install starship" ;;
+        yum) exec_live "pct exec $ctid -- yum -y install starship" ;;
+        pacman) exec_live "pct exec $ctid -- pacman -S --noconfirm starship" ;;
+        zypper) exec_live "pct exec $ctid -- zypper --non-interactive install starship" ;;
+        *) return 0 ;;
+    esac
+    configure_starship_container "$ctid"
+}
+
 is_container_running() {
     local ctid="$1"
     pct status "$ctid" 2>/dev/null | awk '{print $2}' | grep -qx "running"
@@ -320,9 +406,15 @@ ui_set action "Anchoring system binaries..."
 require_cmd apt-get
 require_cmd awk
 require_cmd mktemp
+require_cmd curl
 mkdir -p /usr/local/bin /etc/cron.weekly
 curl -fsSL "$GITHUB_RAW_URL" -o "$INSTALL_PATH" 2>/dev/null || true
 chmod +x "$INSTALL_PATH"
+ui_set phase "SHELL"
+ui_set action "Installing Starship on host..."
+exec_live_fn install_starship_host
+exec_live_fn configure_starship_host
+update_status "${FG_GRN}✓ Host Starship Ready${RST}"
 
 # 2. Target Resolution
 targets=("pve-host-node")
@@ -389,6 +481,10 @@ for target in "${targets[@]}"; do
                 continue
                 ;;
         esac
+        ui_set phase "SHELL"
+        ui_set action "Installing Starship in CT ${target}..."
+        install_starship_container "$target" "$pkg_mgr"
+        update_status "${FG_GRN}✓ CT ${target} Starship Ready${RST}"
     fi
     update_status "${FG_GRN}✓ Repository Synced${RST}"
 
