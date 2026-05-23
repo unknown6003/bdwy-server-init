@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 
-# Exit immediately if a command exits with a non-zero status
+# --- MISSION CRITICAL ENCLOSURE BLOCK ---
+# Wrapping the entire script forces bash to parse the file completely into memory
+# before executing. This prevents pipe-drain crashes when using curl | bash.
+{
 set -Eeuo pipefail
-
-# --- ENFORCE CORE SYSTEM FILEPATH LAYOUTS ---
-mkdir -p /usr/local/bin /etc/cron.weekly /root/.config
 
 # --- CONFIGURATION VARIABLES ---
 INSTALL_PATH="/usr/local/bin/container-updater"
 CRON_PATH="/etc/cron.weekly/container-updater"
 GITHUB_RAW_URL="https://raw.githubusercontent.com/unknown6003/bdwy-server-init/refs/heads/main/auto-setup-bdwy.sh"
+ERR_LOG="/tmp/updater_stderr.log"
 
 STARSHIP_CONFIG_CONTENT=$(cat << 'EOF'
 "$schema" = 'https://starship.rs/config-schema.json'
@@ -254,7 +255,6 @@ show_tui_progress() {
     local bar_len=24
     local filled=$(( percent * bar_len / 100 ))
     local empty=$(( bar_len - filled ))
-    
     printf "\r  ${FG_SAP}${RST}${BG_SAP} PROGRESS ${RST}${FG_SAP}${RST} ["
     printf "${FG_SAP}%${filled}s${RST}" "" | tr ' ' '█'
     printf "%${empty}s" "" | tr ' ' ' '
@@ -262,14 +262,14 @@ show_tui_progress() {
     if [ "$percent" -eq 100 ] || [ "$percent" -eq 5 ]; then printf "\n"; fi
 }
 
-# --- ABSTRACT RUNTIME LAYER ---
+# --- UNATTENDED NON-INTERACTIVE CALL CONSTANTS ---
+export DEBIAN_FRONTEND=noninteractive
+export APT_LISTCHANGES_FRONTEND=none
+APT_HEADLESS="apt-get -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o Acquire::Retries=3 -o Acquire::http::Timeout=15 -y"
+
 run_cmd() {
     local type="$1" target="$2"; shift 2
-    if [ "$type" = "proxmox-lxc" ]; then
-        pct exec "$target" -- "$@" < /dev/null
-    else
-        "$@" < /dev/null
-    fi
+    if [ "$type" = "proxmox-lxc" ]; then pct exec "$target" -- sh -c "$*" < /dev/null; else sh -c "$*" < /dev/null; fi
 }
 
 check_file() {
@@ -282,211 +282,198 @@ check_binary() {
     if [ "$type" = "proxmox-lxc" ]; then pct exec "$target" -- which "$binary" < /dev/null >/dev/null 2>&1; else command -v "$binary" < /dev/null >/dev/null 2>&1; fi
 }
 
-# --- DECOUPLED PIPELINE REGISTRATION ENGINE ---
-if [ ! -f "$0" ] || [ "$(basename "$0" 2>/dev/null)" = "bash" ]; then
-    log_banner
-    log_tui_step "${FG_PCH}" "INIT" "Writing core controller engine shell payload"
+# --- MAIN EXECUTION ROUTINE ---
+main() {
+    mkdir -p /usr/local/bin /etc/cron.weekly /root/.config
     
-    if curl -fsSL "$GITHUB_RAW_URL" -o /tmp/updater-bin.tmp < /dev/null; then
-        mv /tmp/updater-bin.tmp "$INSTALL_PATH"
-        chmod +x "$INSTALL_PATH"
-        log_tui_status "${FG_GRN}" "✓" "DONE"
+    # Identify if piped or missing from static path
+    if [ "${0##*/}" = "bash" ] || [ ! -f "$INSTALL_PATH" ]; then
+        log_banner
+        log_tui_step "${FG_PCH}" "INIT" "Writing core controller engine shell payload"
         
-        log_tui_step "${FG_PCH}" "CRON" "Anchoring periodic weekly execution wrappers"
-        cat << EOF > "$CRON_PATH"
+        if curl -fsSL --connect-timeout 10 "$GITHUB_RAW_URL" -o /tmp/updater-bin.tmp < /dev/null; then
+            mv /tmp/updater-bin.tmp "$INSTALL_PATH"
+            chmod +x "$INSTALL_PATH"
+            log_tui_status "${FG_GRN}" "✓" "DONE"
+            
+            log_tui_step "${FG_PCH}" "CRON" "Anchoring periodic weekly execution wrappers"
+            cat << EOF > "$CRON_PATH"
 #!/bin/sh
 curl -fsSL "$GITHUB_RAW_URL" -o "$INSTALL_PATH" && chmod +x "$INSTALL_PATH"
 "$INSTALL_PATH" --cron
 EOF
-        chmod +x "$CRON_PATH"
-        log_tui_status "${FG_GRN}" "✓" "READY"
-    else
-        log_tui_status "${FG_RED}" "⚠" "FALLBACK ACTIVE (LOCAL RECOVERY MODE)"
-    fi
-fi
-
-# --- PLATFORM IDENTIFICATION PASS ---
-targets=()
-target_modes=()
-
-if command -v pct >/dev/null 2>&1; then
-    targets+=("pve-host-node")
-    target_modes+=("pve-host")
-    
-    vmid_list=$(pct list | awk 'NR>1 && $2=="running" {print $1}')
-    for vmid in $vmid_list; do
-        targets+=("$vmid")
-        target_modes+=("proxmox-lxc")
-    done
-else
-    targets+=("local-machine")
-    target_modes+=("local")
-fi
-
-total_targets=${#targets[@]}
-
-# Create a secure scratch space for error capture
-ERR_LOG="/tmp/updater_stderr.log"
-
-# --- MAIN TUI CORE RUNTIME ---
-for i in "${!targets[@]}"; do
-    target="${targets[$i]}"
-    mode="${target_modes[$i]}"
-    idx=$((i + 1))
-    
-    log_tui_section "$idx" "$total_targets" "$target" "$mode"
-
-    if [ "$mode" = "pve-host" ]; then
-        os_type="debian"
-    elif check_file "$mode" "$target" "/etc/alpine-release"; then
-        os_type="alpine"
-    elif check_file "$mode" "$target" "/etc/debian_version"; then
-        os_type="debian"
-    else
-        log_tui_step "${FG_RED}" "WARN" "Undocumented system profile identified"
-        log_tui_status "${FG_YLW}" "⚠" "SKIP"
-        continue
+            chmod +x "$CRON_PATH"
+            log_tui_status "${FG_GRN}" "✓" "READY"
+        else
+            log_tui_status "${FG_RED}" "⚠" "FALLBACK ACTIVE (LOCAL RECOVERY MODE)"
+        fi
     fi
 
-    # 1. Package Synchronization
-    show_tui_progress 20
-    log_tui_step "${FG_YLW}" "REPO" "Refreshing system package architectures"
-    
-    set +e # Temporarily allow non-zero returns so we can catch errors explicitly
-    if [ "$mode" = "pve-host" ]; then
-        if [ -f /etc/apt/sources.list.d/pve-enterprise.list ]; then sed -i 's/^deb/#deb/g' /etc/apt/sources.list.d/pve-enterprise.list || true; fi
-        if [ -f /etc/apt/sources.list.d/proxmox.sources ]; then sed -i 's/enterprise.proxmox.com/download.proxmox.com/g' /etc/apt/sources.list.d/proxmox.sources || true; fi
-        if ! grep -q "pve-no-subscription" /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null; then echo "deb http://download.proxmox.com/debian/pve trixie pve-no-subscription" > /etc/apt/sources.list.d/pve-no-sub.list; fi
+    # PLATFORM IDENTIFICATION
+    targets=()
+    target_modes=()
+
+    if command -v pct >/dev/null 2>&1; then
+        targets+=("pve-host-node")
+        target_modes+=("pve-host")
+        vmid_list=$(pct list | awk 'NR>1 && $2=="running" {print $1}')
+        for vmid in $vmid_list; do
+            targets+=("$vmid")
+            target_modes+=("proxmox-lxc")
+        done
+    else
+        targets+=("local-machine")
+        target_modes+=("local")
+    fi
+
+    total_targets=${#targets[@]}
+
+    for i in "${!targets[@]}"; do
+        target="${targets[$i]}"
+        mode="${target_modes[$i]}"
+        idx=$((i + 1))
         
-        # Run package sync while routing standard streams safely away from stdin
-        env DEBIAN_FRONTEND=noninteractive apt-get update -y < /dev/null >/dev/null 2> "$ERR_LOG"
-        env DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y --allow-downgrades < /dev/null >/dev/null 2>> "$ERR_LOG"
-        cmd_status=$?
-    elif [ "$os_type" = "debian" ]; then
-        if [ "$mode" = "proxmox-lxc" ]; then
-            pct exec "$target" -- sh -c "env DEBIAN_FRONTEND=noninteractive apt-get update -y && env DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y" < /dev/null >/dev/null 2> "$ERR_LOG"
-        else
-            env DEBIAN_FRONTEND=noninteractive apt-get update -y < /dev/null >/dev/null 2> "$ERR_LOG"
-            env DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y < /dev/null >/dev/null 2>> "$ERR_LOG"
-        fi
-        cmd_status=$?
-    elif [ "$os_type" = "alpine" ]; then
-        if [ "$mode" = "proxmox-lxc" ]; then
-            pct exec "$target" -- sh -c "apk update && apk upgrade" < /dev/null >/dev/null 2> "$ERR_LOG"
-        else
-            apk update < /dev/null >/dev/null 2> "$ERR_LOG"
-            apk upgrade < /dev/null >/dev/null 2>> "$ERR_LOG"
-        fi
-        cmd_status=$?
-    fi
-    set -e # Restore strict failure settings
+        log_tui_section "$idx" "$total_targets" "$target" "$mode"
 
-    if [ "$cmd_status" -ne 0 ]; then
-        log_tui_status "${FG_RED}" "✘" "CRASHED"
-        echo -e "\n${FG_RED}┌─── CRITICAL SYSTEM DIAGNOSTIC ERROR ERROR LOG ─────────────────────────┐${RST}"
-        cat "$ERR_LOG" | sed 's/^/  /' || echo "  Unknown structural system crash state."
-        echo -e "${FG_RED}└────────────────────────────────────────────────────────────────────────┘${RST}"
-        exit 1
-    fi
-    log_tui_status "${FG_GRN}" "✓" "UPDATED"
-
-    # 2. Unattended Engine Links
-    show_tui_progress 40
-    log_tui_step "${FG_YLW}" "AUTO" "Injecting unattended processing background engines"
-    if [ "$os_type" = "debian" ] || [ "$mode" = "pve-host" ]; then
         if [ "$mode" = "pve-host" ]; then
-            env DEBIAN_FRONTEND=noninteractive apt-get install -y unattended-upgrades apt-listchanges < /dev/null >/dev/null 2>&1
-            echo "unattended-upgrades unattended-upgrades/enable_auto_updates boolean true" | debconf-set-selections < /dev/null >/dev/null 2>&1
-            dpkg-reconfigure -f noninteractive unattended-upgrades < /dev/null >/dev/null 2>&1
-        elif [ "$mode" = "proxmox-lxc" ]; then
-            pct exec "$target" -- sh -c "env DEBIAN_FRONTEND=noninteractive apt-get install -y unattended-upgrades apt-listchanges" < /dev/null >/dev/null 2>&1
-            pct exec "$target" -- sh -c "echo 'unattended-upgrades unattended-upgrades/enable_auto_updates boolean true' | debconf-set-selections" < /dev/null >/dev/null 2>&1
-            pct exec "$target" -- dpkg-reconfigure -f noninteractive unattended-upgrades < /dev/null >/dev/null 2>&1
+            os_type="debian"
+        elif check_file "$mode" "$target" "/etc/alpine-release"; then
+            os_type="alpine"
+        elif check_file "$mode" "$target" "/etc/debian_version"; then
+            os_type="debian"
         else
-            env DEBIAN_FRONTEND=noninteractive apt-get install -y unattended-upgrades apt-listchanges < /dev/null >/dev/null 2>&1
-            echo "unattended-upgrades unattended-upgrades/enable_auto_updates boolean true" | debconf-set-selections < /dev/null >/dev/null 2>&1
-            dpkg-reconfigure -f noninteractive unattended-upgrades < /dev/null >/dev/null 2>&1
+            log_tui_step "${FG_RED}" "WARN" "Undocumented system profile identified"
+            log_tui_status "${FG_YLW}" "⚠" "SKIP"
+            continue
         fi
-    elif [ "$os_type" = "alpine" ]; then
-        run_cmd "$mode" "$target" apk add cronie
-        run_cmd "$mode" "$target" rc-update add cronie default || true
-        run_cmd "$mode" "$target" rc-service cronie start || true
-        cron_script="#!/bin/sh\napk update && apk upgrade"
-        if [ "$mode" = "proxmox-lxc" ]; then echo -e "$cron_script" | pct exec "$target" -- tee /etc/periodic/daily/apk-upgrade > /dev/null; else echo -e "$cron_script" | tee /etc/periodic/daily/apk-upgrade > /dev/null; fi
-        run_cmd "$mode" "$target" chmod +x /etc/periodic/daily/apk-upgrade
-    fi
-    log_tui_status "${FG_GRN}" "✓" "ACTIVE"
 
-    # 3. Starship Target Configurations
-    show_tui_progress 60
-    log_tui_step "${FG_PCH}" "SHSH" "Verifying localized Starship engine prompt presence"
-    if ! check_binary "$mode" "$target" "starship"; then
-        if [ "$os_type" = "debian" ]; then run_cmd "$mode" "$target" env DEBIAN_FRONTEND=noninteractive apt-get install -y curl; fi
-        if [ "$os_type" = "alpine" ]; then run_cmd "$mode" "$target" apk add curl; fi
-        if [ "$mode" = "proxmox-lxc" ]; then pct exec "$target" -- sh -c "curl -sS https://starship.rs/install.sh | sh -s -- -y" < /dev/null >/dev/null 2>&1; else sh -c "curl -sS https://starship.rs/install.sh | sh -s -- -y" < /dev/null >/dev/null 2>&1; fi
-        log_tui_status "${FG_GRN}" "✓" "INSTALLED"
-    else
-        log_tui_status "${FG_SAP}" "ℹ" "EXISTS"
-    fi
+        # 1. Package Synchronization
+        show_tui_progress 20
+        log_tui_step "${FG_YLW}" "REPO" "Refreshing system package architectures"
+        
+        set +e 
+        if [ "$mode" = "pve-host" ]; then
+            dpkg --configure -a >/dev/null 2>&1
+            
+            # Dynamically fetch OS codename to prevent hardcoded breaking (e.g. trixie vs bookworm)
+            OS_CODENAME=$(grep "VERSION_CODENAME" /etc/os-release | cut -d'=' -f2 || echo "bookworm")
+            
+            rm -f /etc/apt/sources.list.d/pve-enterprise.list
+            rm -f /etc/apt/sources.list.d/ceph.list
+            echo "deb http://download.proxmox.com/debian/pve $OS_CODENAME pve-no-subscription" > /etc/apt/sources.list.d/pve-no-sub.list
+            
+            $APT_HEADLESS update >/dev/null 2> "$ERR_LOG"
+            $APT_HEADLESS dist-upgrade >/dev/null 2>> "$ERR_LOG"
+            cmd_status=$?
+        elif [ "$os_type" = "debian" ]; then
+            if [ "$mode" = "proxmox-lxc" ]; then
+                pct exec "$target" -- sh -c "dpkg --configure -a >/dev/null 2>&1" < /dev/null
+                pct exec "$target" -- sh -c "export DEBIAN_FRONTEND=noninteractive; apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=15 -y update >/dev/null 2> '$ERR_LOG' && apt-get -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -y dist-upgrade >/dev/null 2>> '$ERR_LOG'" < /dev/null
+            else
+                dpkg --configure -a >/dev/null 2>&1
+                $APT_HEADLESS update >/dev/null 2> "$ERR_LOG"
+                $APT_HEADLESS dist-upgrade >/dev/null 2>> "$ERR_LOG"
+            fi
+            cmd_status=$?
+        elif [ "$os_type" = "alpine" ]; then
+            if [ "$mode" = "proxmox-lxc" ]; then
+                pct exec "$target" -- sh -c "apk update >/dev/null 2> '$ERR_LOG' && apk upgrade >/dev/null 2>> '$ERR_LOG'" < /dev/null
+            else
+                apk update >/dev/null 2> "$ERR_LOG"
+                apk upgrade >/dev/null 2>> "$ERR_LOG"
+            fi
+            cmd_status=$?
+        fi
+        set -e 
 
-    # 4. Inject Configuration Profiles
-    show_tui_progress 80
-    log_tui_step "${FG_PCH}" "CONF" "Deploying visual parameters and environment variables"
-    run_cmd "$mode" "$target" mkdir -p /root/.config
-    if [ "$mode" = "proxmox-lxc" ]; then echo "$STARSHIP_CONFIG_CONTENT" | pct exec "$target" -- tee /root/.config/starship.toml > /dev/null; else echo "$STARSHIP_CONFIG_CONTENT" | tee /root/.config/starship.toml > /dev/null; fi
+        if [ "$cmd_status" -ne 0 ]; then
+            log_tui_status "${FG_RED}" "✘" "CRASHED"
+            echo -e "\n${FG_RED}┌─── CRITICAL SYSTEM DIAGNOSTIC ERROR LOG ───────────────────────────────┐${RST}"
+            cat "$ERR_LOG" | sed 's/^/  /' || echo "  Unknown structural system network stall."
+            echo -e "${FG_RED}└────────────────────────────────────────────────────────────────────────┘${RST}"
+            exit 1
+        fi
+        log_tui_status "${FG_GRN}" "✓" "UPDATED"
 
-    if check_file "$mode" "$target" "/root/.bashrc"; then
-        if [ "$mode" = "proxmox-lxc" ]; then
-            if ! pct exec "$target" -- grep -q "starship init bash" /root/.bashrc; then echo 'eval "$(starship init bash)"' | pct exec "$target" -- tee -a /root/.bashrc > /dev/null; fi
+        # 2. Unattended Engine Setup
+        show_tui_progress 40
+        log_tui_step "${FG_YLW}" "AUTO" "Injecting unattended processing background engines"
+        if [ "$os_type" = "debian" ] || [ "$mode" = "pve-host" ]; then
+            if [ "$mode" = "pve-host" ] || [ "$mode" = "local" ]; then
+                $APT_HEADLESS install unattended-upgrades apt-listchanges >/dev/null 2>&1
+                echo "unattended-upgrades unattended-upgrades/enable_auto_updates boolean true" | debconf-set-selections >/dev/null 2>&1
+                dpkg-reconfigure -f noninteractive unattended-upgrades >/dev/null 2>&1
+            elif [ "$mode" = "proxmox-lxc" ]; then
+                pct exec "$target" -- sh -c "export DEBIAN_FRONTEND=noninteractive; apt-get -y install unattended-upgrades apt-listchanges >/dev/null 2>&1" < /dev/null
+                pct exec "$target" -- sh -c "echo 'unattended-upgrades unattended-upgrades/enable_auto_updates boolean true' | debconf-set-selections >/dev/null 2>&1" < /dev/null
+                pct exec "$target" -- sh -c "export DEBIAN_FRONTEND=noninteractive; dpkg-reconfigure -f noninteractive unattended-upgrades >/dev/null 2>&1" < /dev/null
+            fi
+        elif [ "$os_type" = "alpine" ]; then
+            run_cmd "$mode" "$target" "apk add cronie && rc-update add cronie default || true && rc-service cronie start || true"
+            cron_script="#!/bin/sh\napk update && apk upgrade"
+            if [ "$mode" = "proxmox-lxc" ]; then echo -e "$cron_script" | pct exec "$target" -- tee /etc/periodic/daily/apk-upgrade > /dev/null; else echo -e "$cron_script" | tee /etc/periodic/daily/apk-upgrade > /dev/null; fi
+            run_cmd "$mode" "$target" "chmod +x /etc/periodic/daily/apk-upgrade"
+        fi
+        log_tui_status "${FG_GRN}" "✓" "ACTIVE"
+
+        # 3. Starship Configs
+        show_tui_progress 60
+        log_tui_step "${FG_PCH}" "SHSH" "Verifying localized Starship engine prompt presence"
+        if ! check_binary "$mode" "$target" "starship"; then
+            if [ "$os_type" = "debian" ]; then run_cmd "$mode" "$target" "apt-get install -y curl >/dev/null 2>&1"; fi
+            if [ "$os_type" = "alpine" ]; then run_cmd "$mode" "$target" "apk add curl >/dev/null 2>&1"; fi
+            run_cmd "$mode" "$target" "curl -sS https://starship.rs/install.sh | sh -s -- -y >/dev/null 2>&1"
+            log_tui_status "${FG_GRN}" "✓" "INSTALLED"
         else
-            if ! grep -q "starship init bash" /root/.bashrc; then echo 'eval "$(starship init bash)"' | tee -a /root/.bashrc > /dev/null; fi
+            log_tui_status "${FG_SAP}" "ℹ" "EXISTS"
         fi
-    fi
-    if check_file "$mode" "$target" "/root/.zshrc"; then
-        if [ "$mode" = "proxmox-lxc" ]; then
-            if ! pct exec "$target" -- grep -q "starship init zsh" /root/.zshrc; then echo 'eval "$(starship init zsh)"' | pct exec "$target" -- tee -a /root/.zshrc > /dev/null; fi
-        else
-            if ! grep -q "starship init zsh" /root/.zshrc; then echo 'eval "$(starship init zsh)"' | tee -a /root/.zshrc > /dev/null; fi
-        fi
-    fi
-    if [ "$os_type" = "alpine" ] && check_file "$mode" "$target" "/root/.profile"; then
-        if [ "$mode" = "proxmox-lxc" ]; then
-            if ! pct exec "$target" -- grep -q "starship init" /root/.profile; then echo 'eval "$(starship init posix)"' | pct exec "$target" -- tee -a /root/.profile > /dev/null; fi
-        else
-            if ! grep -q "starship init" /root/.profile; then echo 'eval "$(starship init posix)"' | tee -a /root/.profile > /dev/null; fi
-        fi
-    fi
-    log_tui_status "${FG_GRN}" "✓" "CONFIGURED"
 
-    # 5. Application Upgrades Logic
-    show_tui_progress 100
-    log_tui_step "${FG_SAP}" "DCKR" "Processing application container lifecycle updates"
-    if check_binary "$mode" "$target" "docker"; then
-        if [ "$mode" = "proxmox-lxc" ]; then compose_files=$(pct exec "$target" -- find / -maxdepth 4 -name "docker-compose.yml" -o -name "compose.yml" 2>/dev/null || true); else compose_files=$(find / -maxdepth 4 -name "docker-compose.yml" -o -name "compose.yml" 2>/dev/null || true); fi
-        if [ -n "$compose_files" ]; then
-            while read -r compose_path; do
-                [ -z "$compose_path" ] && continue
-                compose_dir=$(dirname "$compose_path")
-                if [ "$mode" = "proxmox-lxc" ]; then
-                    if pct exec "$target" -- docker compose version < /dev/null >/dev/null 2>&1; then pct exec "$target" -- sh -c "cd $compose_dir && docker compose pull && docker compose up -d" < /dev/null >/dev/null 2>&1;
-                    elif pct exec "$target" -- docker-compose version < /dev/null >/dev/null 2>&1; then pct exec "$target" -- sh -c "cd $compose_dir && docker-compose pull && docker-compose up -d" < /dev/null >/dev/null 2>&1; fi
-                else
-                    if docker compose version < /dev/null >/dev/null 2>&1; then sh -c "cd $compose_dir && docker compose pull && docker compose up -d" < /dev/null >/dev/null 2>&1;
-                    elif docker-compose version < /dev/null >/dev/null 2>&1; then sh -c "cd $compose_dir && docker-compose pull && docker-compose up -d" < /dev/null >/dev/null 2>&1; fi
-                fi
-            done <<< "$compose_files"
-            log_tui_status "${FG_GRN}" "✓" "DOCKER COMS"
-        else
-            log_tui_status "${FG_SAP}" "ℹ" "NO STACKS"
+        # 4. Inject Configuration Profiles
+        show_tui_progress 80
+        log_tui_step "${FG_PCH}" "CONF" "Deploying visual parameters and environment variables"
+        run_cmd "$mode" "$target" "mkdir -p /root/.config"
+        if [ "$mode" = "proxmox-lxc" ]; then echo "$STARSHIP_CONFIG_CONTENT" | pct exec "$target" -- tee /root/.config/starship.toml > /dev/null; else echo "$STARSHIP_CONFIG_CONTENT" | tee /root/.config/starship.toml > /dev/null; fi
+
+        if check_file "$mode" "$target" "/root/.bashrc"; then
+            run_cmd "$mode" "$target" "grep -q 'starship init bash' /root/.bashrc || echo 'eval \"\$(starship init bash)\"' >> /root/.bashrc"
         fi
-    else
-        log_tui_status "${FG_SAP}" "ℹ" "NO ENGINE"
-    fi
-done
+        if check_file "$mode" "$target" "/root/.zshrc"; then
+            run_cmd "$mode" "$target" "grep -q 'starship init zsh' /root/.zshrc || echo 'eval \"\$(starship init zsh)\"' >> /root/.zshrc"
+        fi
+        if [ "$os_type" = "alpine" ] && check_file "$mode" "$target" "/root/.profile"; then
+            run_cmd "$mode" "$target" "grep -q 'starship init' /root/.profile || echo 'eval \"\$(starship init posix)\"' >> /root/.profile"
+        fi
+        log_tui_status "${FG_GRN}" "✓" "CONFIGURED"
 
-# Clean up working log directories cleanly
-rm -f "$ERR_LOG"
+        # 5. Application Upgrades Logic
+        show_tui_progress 100
+        log_tui_step "${FG_SAP}" "DCKR" "Processing application container lifecycle updates"
+        if check_binary "$mode" "$target" "docker"; then
+            if [ "$mode" = "proxmox-lxc" ]; then compose_files=$(pct exec "$target" -- find / -maxdepth 4 \( -path /proc -o -path /sys -o -path /dev \) -prune -o \( -name "docker-compose.yml" -o -name "compose.yml" \) -print 2>/dev/null || true); else compose_files=$(find / -maxdepth 4 \( -path /proc -o -path /sys -o -path /dev \) -prune -o \( -name "docker-compose.yml" -o -name "compose.yml" \) -print 2>/dev/null || true); fi
+            if [ -n "$compose_files" ]; then
+                while read -r compose_path; do
+                    [ -z "$compose_path" ] && continue
+                    compose_dir=$(dirname "$compose_path")
+                    run_cmd "$mode" "$target" "if docker compose version >/dev/null 2>&1; then cd '$compose_dir' && docker compose pull && docker compose up -d; elif docker-compose version >/dev/null 2>&1; then cd '$compose_dir' && docker-compose pull && docker-compose up -d; fi >/dev/null 2>&1"
+                done <<< "$compose_files"
+                log_tui_status "${FG_GRN}" "✓" "DOCKER COMS"
+            else
+                log_tui_status "${FG_SAP}" "ℹ" "NO STACKS"
+            fi
+        else
+            log_tui_status "${FG_SAP}" "ℹ" "NO ENGINE"
+        fi
+    done
 
-echo -e "\n${FG_GRN}┌────────────────────────────────────────────────────────────────────────┐${RST}"
-echo -e "${FG_GRN}│${RST} ${BG_GRN} ⚡ COMPLETED: ALL DEPLOYMENT NODE TARGETS OPTIMIZED SUCCESSFULLY ${RST}    ${FG_GRN}│${RST}"
-echo -e "${FG_GRN}└────────────────────────────────────────────────────────────────────────┘${RST}"
+    rm -f "$ERR_LOG"
+    echo -e "\n${FG_GRN}┌────────────────────────────────────────────────────────────────────────┐${RST}"
+    echo -e "${FG_GRN}│${RST} ${BG_GRN} ⚡ COMPLETED: ALL DEPLOYMENT NODE TARGETS OPTIMIZED SUCCESSFULLY ${RST}    ${FG_GRN}│${RST}"
+    echo -e "${FG_GRN}└────────────────────────────────────────────────────────────────────────┘${RST}"
+}
+
+# --- EXECUTION TRIGGER ---
+# By passing /dev/null as standard input to the main function,
+# we completely seal the execution environment off from the curl pipeline.
+main "$@" < /dev/null
+
+}
