@@ -573,15 +573,18 @@ EOF
 
 detect_container_pkg_manager() {
     local ctid="$1"
+    local ostype
+    ostype="$(pct config "$ctid" 2>/dev/null | awk -F': ' '/^ostype:/{print $2}' | tr -d '\r' | xargs)"
+    case "$ostype" in
+        alpine) echo "apk"; return 0 ;;
+        debian|ubuntu|devuan) echo "apt"; return 0 ;;
+    esac
+
     pct exec "$ctid" -- sh -lc '
-        if command -v apt-get >/dev/null 2>&1; then echo apt; exit 0; fi
-        if command -v apk >/dev/null 2>&1; then echo apk; exit 0; fi
-        if command -v dnf >/dev/null 2>&1; then echo dnf; exit 0; fi
-        if command -v yum >/dev/null 2>&1; then echo yum; exit 0; fi
-        if command -v pacman >/dev/null 2>&1; then echo pacman; exit 0; fi
-        if command -v zypper >/dev/null 2>&1; then echo zypper; exit 0; fi
-        echo unknown
-    '
+if command -v apt-get >/dev/null 2>&1; then echo apt; exit 0; fi
+if command -v apk >/dev/null 2>&1; then echo apk; exit 0; fi
+echo unknown
+' 2>/dev/null | tr -d '\r' | tail -n1 | xargs
 }
 
 ensure_line_in_file() {
@@ -626,15 +629,18 @@ install_starship_container() {
     local ctid="$1"
     local pkg_mgr="$2"
     case "$pkg_mgr" in
-        apt) exec_live "pct exec $ctid -- sh -lc 'apt-get update -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=5 && apt-get install -y starship'" ;;
-        apk) exec_live "pct exec $ctid -- apk add --no-cache starship" ;;
-        dnf) exec_live "pct exec $ctid -- dnf -y install starship" ;;
-        yum) exec_live "pct exec $ctid -- yum -y install starship" ;;
-        pacman) exec_live "pct exec $ctid -- pacman -S --noconfirm starship" ;;
-        zypper) exec_live "pct exec $ctid -- zypper --non-interactive install starship" ;;
-        *) return 0 ;;
+        apt)
+            exec_live "pct exec $ctid -- sh -lc 'if command -v starship >/dev/null 2>&1; then exit 0; fi; apt-get update -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=5 && (apt-get install -y starship || (apt-get install -y curl ca-certificates && curl -fsSL https://starship.rs/install.sh | sh -s -- -y))'"
+            ;;
+        apk)
+            exec_live "pct exec $ctid -- sh -lc 'if command -v starship >/dev/null 2>&1; then exit 0; fi; (apk add --no-cache starship) || (apk add --no-cache curl ca-certificates && curl -fsSL https://starship.rs/install.sh | sh -s -- -y)'"
+            ;;
+        *)
+            return 1
+            ;;
     esac
     configure_starship_container "$ctid"
+    return 0
 }
 
 is_container_running() {
@@ -729,8 +735,12 @@ for target in "${targets[@]}"; do
         esac
         ui_set phase "SHELL"
         ui_set action "Installing Starship in CT ${target}..."
-        install_starship_container "$target" "$pkg_mgr"
-        update_status "${FG_GRN}✓ CT ${target} Starship Ready${RST}"
+        if install_starship_container "$target" "$pkg_mgr"; then
+            update_status "${FG_GRN}✓ CT ${target} Starship Ready${RST}"
+        else
+            update_status "${FG_RED}✗ CT ${target} Starship install failed${RST}"
+            continue
+        fi
     fi
     update_status "${FG_GRN}✓ Repository Synced${RST}"
 
