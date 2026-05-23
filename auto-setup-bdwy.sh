@@ -13,15 +13,69 @@ FG_CYN="\e[38;5;117m"
 FG_GRN="\e[38;5;115m"
 FG_YLW="\e[38;5;221m"
 FG_RED="\e[38;5;204m"
+FG_BLU="\e[38;5;81m"
+FG_MAG="\e[38;5;213m"
+FG_ORG="\e[38;5;208m"
+FG_DIM="\e[2m"
 RST="\e[0m"
 
+IS_TTY=0
+if [ -t 1 ] && command -v tput >/dev/null 2>&1; then
+    IS_TTY=1
+fi
+
+UI_TARGET="-"
+UI_PHASE="Boot"
+UI_ACTION="Initializing..."
+UI_RESULT="Pending"
+UI_PROGRESS="0/0"
+UI_SPINNER=0
+
+render_dashboard() {
+    [ "$IS_TTY" -eq 1 ] || return 0
+    local spin_chars=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
+    local spin="${spin_chars[$UI_SPINNER]}"
+    UI_SPINNER=$(((UI_SPINNER + 1) % ${#spin_chars[@]}))
+    clear
+    echo -e "${FG_MAG}┌────────────────────────────────────────────────────────┐${RST}"
+    echo -e "${FG_MAG}│${RST} ${FG_BLU}BDWY SYSTEM INITIALIZATION ENGINE${RST}               ${FG_MAG}│${RST}"
+    echo -e "${FG_MAG}└────────────────────────────────────────────────────────┘${RST}"
+    echo -e "  ${FG_CYN}Target${RST}   : ${FG_GRN}${UI_TARGET}${RST}"
+    echo -e "  ${FG_CYN}Phase${RST}    : ${FG_ORG}${UI_PHASE}${RST} ${FG_DIM}${spin}${RST}"
+    echo -e "  ${FG_CYN}Action${RST}   : ${FG_YLW}${UI_ACTION}${RST}"
+    echo -e "  ${FG_CYN}Status${RST}   : ${UI_RESULT}"
+    echo -e "  ${FG_CYN}Progress${RST} : ${FG_BLU}${UI_PROGRESS}${RST}"
+    echo ""
+}
+
+ui_set() {
+    local key="$1"
+    local value="$2"
+    case "$key" in
+        target) UI_TARGET="$value" ;;
+        phase) UI_PHASE="$value" ;;
+        action) UI_ACTION="$value" ;;
+        result) UI_RESULT="$value" ;;
+        progress) UI_PROGRESS="$value" ;;
+    esac
+    render_dashboard
+}
+
 update_status() {
-    # Move cursor up 1 line and clear it only when terminal control is available.
-    if [ -t 1 ] && command -v tput >/dev/null 2>&1; then
-        tput cuu1 || true
-        tput el || true
-    fi
-    echo -e "  ${FG_CYN}${RST}${FG_CYN}STATUS${RST}${FG_CYN}${RST} $1"
+    ui_set result "$1"
+}
+
+show_loading_screen() {
+    [ "$IS_TTY" -eq 1 ] || return 0
+    local i
+    for i in $(seq 1 20); do
+        UI_PHASE="Boot"
+        UI_ACTION="Loading modules..."
+        UI_RESULT="${FG_BLU}Starting${RST}"
+        UI_PROGRESS="${i}/20"
+        render_dashboard
+        sleep 0.03
+    done
 }
 
 require_cmd() {
@@ -35,25 +89,29 @@ require_cmd() {
 # We use 'tee' to show progress in the TUI while logging to file for debugging
 exec_live() {
     local log_file="/tmp/updater_last.log"
-    echo -e "  ${FG_YLW}${RST}${FG_YLW}PROC${RST}${FG_YLW}${RST} Running: $1"
-    
+    ui_set action "Running: $1"
+    ui_set result "${FG_BLU}In Progress${RST}"
     if ! bash -c "$1" > "$log_file" 2>&1; then
+        ui_set result "${FG_RED}Failed${RST}"
         echo -e "\n${FG_RED}!!! ERROR DETECTED !!!${RST}"
         tail -n 20 "$log_file"
         exit 1
     fi
+    ui_set result "${FG_GRN}Completed${RST}"
 }
 
 exec_live_fn() {
     local fn_name="$1"
     local log_file="/tmp/updater_last.log"
-    echo -e "  ${FG_YLW}${RST}${FG_YLW}PROC${RST}${FG_YLW}${RST} Running: $fn_name"
-
+    ui_set action "Running: $fn_name"
+    ui_set result "${FG_BLU}In Progress${RST}"
     if ! "$fn_name" > "$log_file" 2>&1; then
+        ui_set result "${FG_RED}Failed${RST}"
         echo -e "\n${FG_RED}!!! ERROR DETECTED !!!${RST}"
         tail -n 20 "$log_file"
         exit 1
     fi
+    ui_set result "${FG_GRN}Completed${RST}"
 }
 
 dedupe_sources_file() {
@@ -246,15 +304,12 @@ detect_container_pkg_manager() {
 }
 
 # --- MAIN EXECUTION ---
-if [ -t 1 ]; then
-    clear
-fi
-echo -e "${FG_CYN}┌────────────────────────────────────────────────────────┐${RST}"
-echo -e "${FG_CYN}│${RST} BDWY SYSTEM INITIALIZATION ENGINE                   ${FG_CYN}│${RST}"
-echo -e "${FG_CYN}└────────────────────────────────────────────────────────┘${RST}"
+show_loading_screen
+render_dashboard
 
 # 1. Setup
-echo -e "  ${FG_GRN}${RST}${FG_GRN}INIT${RST}${FG_GRN}${RST} Anchoring system binaries..."
+ui_set phase "INIT"
+ui_set action "Anchoring system binaries..."
 require_cmd apt-get
 require_cmd awk
 require_cmd mktemp
@@ -269,11 +324,16 @@ if command -v pct >/dev/null 2>&1; then
 fi
 
 # 3. Processing Loop
+total_targets="${#targets[@]}"
+target_index=0
 for target in "${targets[@]}"; do
-    echo -e "\n${FG_YLW}>> Target: $target${RST}"
+    target_index=$((target_index + 1))
+    ui_set target "$target"
+    ui_set progress "${target_index}/${total_targets}"
     
     # Source normalization to prevent duplicate repository entries.
-    echo -e "  ${FG_CYN}${RST}${FG_CYN}APT${RST}${FG_CYN}${RST} Normalizing APT source definitions..."
+    ui_set phase "APT"
+    ui_set action "Normalizing APT source definitions..."
     if [ "$target" == "pve-host-node" ]; then
         exec_live_fn enforce_proxmox_repo_policy
         exec_live_fn normalize_apt_sources
@@ -281,7 +341,8 @@ for target in "${targets[@]}"; do
     update_status "${FG_GRN}✓ APT Sources Normalized${RST}"
 
     # Update Repos
-    echo -e "  ${FG_CYN}${RST}${FG_CYN}REPO${RST}${FG_CYN}${RST} Syncing repositories..."
+    ui_set phase "REPO"
+    ui_set action "Syncing repositories..."
     if [ "$target" == "pve-host-node" ]; then
         # Force IPv4 and short timeout for speed
         exec_live "apt-get update -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=5"
@@ -315,7 +376,8 @@ for target in "${targets[@]}"; do
     update_status "${FG_GRN}✓ Repository Synced${RST}"
 
     # Upgrade
-    echo -e "  ${FG_CYN}${RST}${FG_CYN}UPGR${RST}${FG_CYN}${RST} Upgrading packages..."
+    ui_set phase "UPGR"
+    ui_set action "Upgrading packages..."
     if [ "$target" == "pve-host-node" ]; then
         exec_live "apt-get dist-upgrade -y -o Dpkg::Options::=--force-confold"
     else
@@ -343,7 +405,8 @@ for target in "${targets[@]}"; do
     update_status "${FG_GRN}✓ System Upgraded${RST}"
 
     # Cleanup
-    echo -e "  ${FG_CYN}${RST}${FG_CYN}WASH${RST}${FG_CYN}${RST} Cleaning up space..."
+    ui_set phase "WASH"
+    ui_set action "Cleaning up space..."
     if [ "$target" == "pve-host-node" ]; then
         exec_live "apt-get autoremove -y && apt-get clean"
     else
@@ -373,5 +436,10 @@ for target in "${targets[@]}"; do
     update_status "${FG_GRN}✓ Disk Space Reclaimed${RST}"
 done
 
-echo -e "\n${FG_GRN}⚡ Optimization Complete.${RST}"
+ui_set phase "DONE"
+ui_set action "Optimization complete."
+ui_set result "${FG_GRN}⚡ All Targets Updated${RST}"
+if [ "$IS_TTY" -ne 1 ]; then
+    echo -e "\n${FG_GRN}⚡ Optimization Complete.${RST}"
+fi
 }
