@@ -148,6 +148,71 @@ normalize_apt_sources() {
     return 0
 }
 
+disable_enterprise_deb822_entries() {
+    local f="$1"
+    local tmp
+    tmp="$(mktemp)"
+
+    awk '
+        BEGIN { RS=""; ORS="\n\n" }
+        {
+            rec = $0
+            if (rec ~ /URIs:[[:space:]]*https?:\/\/enterprise\.proxmox\.com/) {
+                gsub(/\nEnabled:[[:space:]]*yes/, "\nEnabled: no", rec)
+                if (rec !~ /\nEnabled:[[:space:]]*(yes|no)/) {
+                    rec = rec "\nEnabled: no"
+                }
+            }
+            print rec
+        }
+    ' "$f" > "$tmp"
+
+    if ! cmp -s "$f" "$tmp"; then
+        cp "$f" "${f}.bak.$(date +%s)"
+        mv "$tmp" "$f"
+        return 0
+    fi
+
+    rm -f "$tmp"
+    return 1
+}
+
+enforce_proxmox_repo_policy() {
+    local codename
+    codename="$(. /etc/os-release && echo "${VERSION_CODENAME:-}")"
+    if [ -z "$codename" ]; then
+        codename="trixie"
+    fi
+
+    mkdir -p /etc/apt/sources.list.d
+
+    # Canonical no-subscription Proxmox VE repository (single source of truth).
+    cat > /etc/apt/sources.list.d/proxmox.sources <<EOF
+Types: deb
+URIs: http://download.proxmox.com/debian/pve
+Suites: ${codename}
+Components: pve-no-subscription
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+EOF
+
+    # Canonical no-subscription Ceph repository for Proxmox VE 9 (single source of truth).
+    cat > /etc/apt/sources.list.d/ceph.sources <<EOF
+Types: deb
+URIs: http://download.proxmox.com/debian/ceph-squid
+Suites: ${codename}
+Components: no-subscription
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+EOF
+
+    # Disable enterprise sources if present.
+    shopt -s nullglob
+    local f
+    for f in /etc/apt/sources.list.d/*.sources; do
+        disable_enterprise_deb822_entries "$f" || true
+    done
+    shopt -u nullglob
+}
+
 # --- MAIN EXECUTION ---
 if [ -t 1 ]; then
     clear
@@ -178,6 +243,7 @@ for target in "${targets[@]}"; do
     # Source normalization to prevent duplicate repository entries.
     echo -e "  ${FG_CYN}${RST}${FG_CYN}APT${RST}${FG_CYN}${RST} Normalizing APT source definitions..."
     if [ "$target" == "pve-host-node" ]; then
+        exec_live_fn enforce_proxmox_repo_policy
         exec_live_fn normalize_apt_sources
     fi
     update_status "${FG_GRN}✓ APT Sources Normalized${RST}"
