@@ -305,6 +305,11 @@ detect_container_pkg_manager() {
     '
 }
 
+is_container_running() {
+    local ctid="$1"
+    pct status "$ctid" 2>/dev/null | awk '{print $2}' | grep -qx "running"
+}
+
 # --- MAIN EXECUTION ---
 show_loading_screen
 render_dashboard
@@ -322,7 +327,12 @@ chmod +x "$INSTALL_PATH"
 # 2. Target Resolution
 targets=("pve-host-node")
 if command -v pct >/dev/null 2>&1; then
-    while read -r vmid; do targets+=("$vmid"); done < <(pct list | awk 'NR>1 {print $1}')
+    while read -r vmid; do
+        [ -n "$vmid" ] || continue
+        if is_container_running "$vmid"; then
+            targets+=("$vmid")
+        fi
+    done < <(pct list | awk 'NR>1 {print $1}')
 fi
 
 # 3. Processing Loop
@@ -332,6 +342,11 @@ for target in "${targets[@]}"; do
     target_index=$((target_index + 1))
     ui_set target "$target"
     ui_set progress "${target_index}/${total_targets}"
+
+    if [ "$target" != "pve-host-node" ] && ! is_container_running "$target"; then
+        update_status "${FG_YLW}⚠ CT ${target} is stopped; skipping${RST}"
+        continue
+    fi
     
     # Source normalization to prevent duplicate repository entries.
     ui_set phase "APT"
