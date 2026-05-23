@@ -166,7 +166,8 @@ for target in "${targets[@]}"; do
     # Source normalization to prevent duplicate repository entries.
     echo -e "  ${FG_CYN}${RST}${FG_CYN}APT${RST}${FG_CYN}${RST} Normalizing APT source definitions..."
     if [ "$target" == "pve-host-node" ]; then
-        exec_live "normalize_apt_sources"
+        exec_live "$(declare -f dedupe_sources_file dedupe_list_file normalize_apt_sources)
+normalize_apt_sources"
     fi
     update_status "${FG_GRN}✓ APT Sources Normalized${RST}"
 
