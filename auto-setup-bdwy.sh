@@ -186,23 +186,42 @@ enforce_proxmox_repo_policy() {
 
     mkdir -p /etc/apt/sources.list.d
 
-    # Canonical no-subscription Proxmox VE repository (single source of truth).
-    cat > /etc/apt/sources.list.d/proxmox.sources <<EOF
-Types: deb
-URIs: http://download.proxmox.com/debian/pve
-Suites: ${codename}
-Components: pve-no-subscription
-Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+    # Remove known conflicting Proxmox/Ceph source files first.
+    rm -f \
+        /etc/apt/sources.list.d/proxmox.sources \
+        /etc/apt/sources.list.d/ceph.sources \
+        /etc/apt/sources.list.d/pve-install-repo.sources \
+        /etc/apt/sources.list.d/pve-install-repo.list \
+        /etc/apt/sources.list.d/pve-enterprise.list \
+        /etc/apt/sources.list.d/pve-enterprise.sources \
+        /etc/apt/sources.list.d/ceph-enterprise.list \
+        /etc/apt/sources.list.d/ceph-enterprise.sources
+
+    # Canonical no-subscription repositories in one-line format.
+    cat > /etc/apt/sources.list.d/pve-no-subscription.list <<EOF
+deb http://download.proxmox.com/debian/pve ${codename} pve-no-subscription
 EOF
 
-    # Canonical no-subscription Ceph repository for Proxmox VE 9 (single source of truth).
-    cat > /etc/apt/sources.list.d/ceph.sources <<EOF
-Types: deb
-URIs: http://download.proxmox.com/debian/ceph-squid
-Suites: ${codename}
-Components: no-subscription
-Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+    cat > /etc/apt/sources.list.d/ceph-no-subscription.list <<EOF
+deb http://download.proxmox.com/debian/ceph-squid ${codename} no-subscription
 EOF
+
+    # Strip Proxmox/Ceph lines from /etc/apt/sources.list to avoid duplicate targets.
+    if [ -f /etc/apt/sources.list ]; then
+        local tmp
+        tmp="$(mktemp)"
+        awk '
+            $0 ~ /proxmox\.com\/debian\/pve/ { next }
+            $0 ~ /proxmox\.com\/debian\/ceph-/ { next }
+            { print }
+        ' /etc/apt/sources.list > "$tmp"
+        if ! cmp -s /etc/apt/sources.list "$tmp"; then
+            cp /etc/apt/sources.list "/etc/apt/sources.list.bak.$(date +%s)"
+            mv "$tmp" /etc/apt/sources.list
+        else
+            rm -f "$tmp"
+        fi
+    fi
 
     # Disable enterprise sources if present.
     shopt -s nullglob
