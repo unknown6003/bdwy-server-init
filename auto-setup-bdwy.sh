@@ -206,32 +206,57 @@ crust = "#11111b"
 EOF
 )
 
-# --- TERMINAL UI GRAPHICS ENGINE ---
-CLR_BLU="\e[1;34m"
-CLR_GRN="\e[1;32m"
-CLR_YLW="\e[1;33m"
-CLR_RED="\e[1;31m"
-CLR_CYN="\e[1;36m"
-CLR_RST="\e[0m"
+# --- TUI GEOMETRIC THEME COLOR ENGINE ---
+BG_RED="\e[48;5;204m\e[38;5;232m"
+BG_PCH="\e[48;5;209m\e[38;5;232m"
+BG_YLW="\e[48;5;221m\e[38;5;232m"
+BG_GRN="\e[48;5;115m\e[38;5;232m"
+BG_SAP="\e[48;5;110m\e[38;5;232m"
+BG_LAV="\e[48;5;147m\e[38;5;232m"
 
-log_info() {  echo -e "${CLR_BLU}[⚙ INFO]${CLR_RST} $1"; }
-log_step() {  echo -e "  ${CLR_CYN}➔${CLR_RST} $1... "; }
-log_ok() {    echo -e "  ${CLR_GRN}✓${CLR_RST} $1"; }
-log_warn() {  echo -e "${CLR_YLW}[⚠ WARN]${CLR_RST} $1"; }
-log_err() {   echo -e "${CLR_RED}[✘ FAIL]${CLR_RST} $1"; }
+FG_RED="\e[38;5;204m"
+FG_PCH="\e[38;5;209m"
+FG_YLW="\e[38;5;221m"
+FG_GRN="\e[38;5;115m"
+FG_SAP="\e[38;5;110m"
+FG_LAV="\e[38;5;147m"
+FG_MNT("\e[38;5;237m")
+RST="\e[0m"
 
-show_progress() {
-    local label="$1" current="$2" total="$3"
-    local percent=$(( current * 100 / total ))
-    local bar_len=20
+log_banner() {
+    clear
+    echo -e "${FG_RED}┌────────────────────────────────────────────────────────────────────────┐${RST}"
+    echo -e "${FG_RED}│${RST} ${BG_RED}  SYSTEM INITIALIZATION ENGINE ${RST}                                      ${FG_RED}│${RST}"
+    echo -e "${FG_RED}└────────────────────────────────────────────────────────────────────────┘${RST}"
+}
+
+log_tui_section() {
+    local idx="$1" total="$2" name="$3" type="$4"
+    echo -e "\n${FG_SAP}${RST}${BG_SAP} TARGET PANEL ${idx}/${total} ${RST}${FG_SAP}${RST} ${FG_LAV}ID: ${name}${RST} [Type: ${type}]"
+    echo -e "${FG_MNT}────────────────────────────────────────────────────────────────────────${RST}"
+}
+
+log_tui_step() {
+    local status_color="$1" tag="$2" msg="$3"
+    printf "  ${status_color}${RST}${status_color}${tag}${RST}${status_color}${RST} %-50s" "$msg"
+}
+
+log_tui_status() {
+    local color="$1" symbol="$2" text="$3"
+    echo -e "[${color}${symbol}${RST}] ${color}${text}${RST}"
+}
+
+show_tui_progress() {
+    local percent=$1
+    local bar_len=24
     local filled=$(( percent * bar_len / 100 ))
     local empty=$(( bar_len - filled ))
 
-    printf "\r${CLR_BLU}[⏳ PROG]${CLR_RST} %-25s [" "$label"
-    printf "%${filled}s" "" | tr ' ' '■'
+    printf "\r  ${FG_SAP}${RST}${BG_SAP} PROGRESS ${RST}${FG_SAP}${RST} ["
+    printf "${FG_SAP}%${filled}s${RST}" "" | tr ' ' '█'
     printf "%${empty}s" "" | tr ' ' ' '
-    printf "] %d%% (%d/%d)" "$percent" "$current" "$total"
-    if [ "$current" -eq "$total" ]; then echo ""; fi
+    printf "] %d%%" "$percent"
+    if [ "$percent" -eq 100 ] || [ "$percent" -eq 5 ]; then printf "\n"; fi
 }
 
 # --- ABSTRACT RUNTIME LAYER ---
@@ -254,28 +279,27 @@ check_binary() {
     if [ "$type" = "proxmox-lxc" ]; then pct exec "$target" -- which "$binary" >/dev/null 2>&1; else command -v "$binary" >/dev/null 2>&1; fi
 }
 
-# --- INLINE SELF-INSTALLATION ENGINE ---
-# Detect pipeline execution safely without generating disk write descriptor blocks
+# --- INLINE DECOUPLED PIPELINE ESCAPE ENGINE ---
 if [ ! -f "$0" ] || [ "$(basename "$0" 2>/dev/null)" = "bash" ]; then
-    log_info "Web execution pipe detected. Dropping localization profile down..."
+    log_banner
+    log_tui_step "${FG_PCH}" "INIT" "Initializing safe system directory configurations"
+    mkdir -p /usr/local/bin /etc/cron.weekly
+    log_tui_status "${FG_GRN}" "✓" "DONE"
 
-    # Generate the payload locally from the active memory context
-    cat << 'EOF' > "$INSTALL_PATH" || true
-# Context container proxy link
-EOF
+    log_tui_step "${FG_PCH}" "CRON" "Escaping runtime stream pipeline buffer locks"
+    # Fork a clean, unlinked process to fetch the repository array without crashing the write descriptor
+    nohup sh -c "curl -sSL '${GITHUB_RAW_URL}' -o '${INSTALL_PATH}' && chmod +x '${INSTALL_PATH}'" >/dev/null 2>&1 &
 
-    # Safe decoupled grab to avoid curl 23 network halts
-    curl -sSL "$GITHUB_RAW_URL" -o "$INSTALL_PATH" || log_warn "Retrying local copy bind write operations..."
-    chmod +x "$INSTALL_PATH"
-
-    # Generate weekly system wrapper cron task setup
-    cat << EOF > "$CRON_PATH"
+    cat << EOF > "$CRON_PATH" 2>/dev/null || true
 #!/bin/sh
 curl -sSL "$GITHUB_RAW_URL" -o "$INSTALL_PATH" && chmod +x "$INSTALL_PATH"
 "$INSTALL_PATH" --cron
 EOF
-    chmod +x "$CRON_PATH"
-    log_ok "Automation scheduler anchored at: $CRON_PATH"
+    chmod +x "$CRON_PATH" 2>/dev/null || true
+    log_tui_status "${FG_GRN}" "✓" "READY"
+
+    # Allow background execution thread a brief window to anchor before looping active steps
+    sleep 0.8
 fi
 
 # --- PLATFORM IDENTIFICATION PASS ---
@@ -283,7 +307,6 @@ targets=()
 target_modes=()
 
 if command -v pct >/dev/null 2>&1; then
-    log_info "Hypervisor environment detected. Parsing operational clusters..."
     targets+=("pve-host-node")
     target_modes+=("pve-host")
 
@@ -293,24 +316,22 @@ if command -v pct >/dev/null 2>&1; then
         target_modes+=("proxmox-lxc")
     done
 else
-    log_info "Standalone server infrastructure verified. Initializing localized tracking target..."
     targets+=("local-machine")
     target_modes+=("local")
 fi
 
 total_targets=${#targets[@]}
 
-# --- MAIN CORE PROCESSING LOOPS ---
+# --- MAIN TUI CORE RUNTIME ---
+log_banner
+
 for i in "${!targets[@]}"; do
     target="${targets[$i]}"
     mode="${target_modes[$i]}"
     idx=$((i + 1))
 
-    echo -e "\n${CLR_GRN}========================================================================${CLR_RST}"
-    echo -e "${CLR_CYN}[TARGET $idx/$total_targets] Hosting Platform Instance: $target${CLR_RST}"
-    echo -e "${CLR_GRN}========================================================================${CLR_RST}"
+    log_tui_section "$idx" "$total_targets" "$target" "$mode"
 
-    # Target-Specific Distribution Detection Matrix
     if [ "$mode" = "pve-host" ]; then
         os_type="debian"
     elif check_file "$mode" "$target" "/etc/alpine-release"; then
@@ -318,52 +339,37 @@ for i in "${!targets[@]}"; do
     elif check_file "$mode" "$target" "/etc/debian_version"; then
         os_type="debian"
     else
-        log_warn "Undocumented operating system structure identified on target $target. Skipping processing."
+        log_tui_step "${FG_RED}" "WARN" "Undocumented system profile identified"
+        log_tui_status "${FG_YLW}" "⚠" "SKIP"
         continue
     fi
 
-    # 1. Repository Sanity, Maintenance, and Security System Upgrades
-    show_progress "Updating Repositories" 1 5
+    # 1. Package Synchronization
+    show_tui_progress 20
+    log_tui_step "${FG_YLW}" "REPO" "Refreshing system package architectures"
     if [ "$mode" = "pve-host" ]; then
-        log_step "Fixing Proxmox commercial repository definitions"
-        # Comment out the commercial enterprise listing to stop unauthorized 401 connection barriers
-        if [ -f /etc/apt/sources.list.d/pve-enterprise.list ]; then
-            sed -i 's/^deb/#deb/g' /etc/apt/sources.list.d/pve-enterprise.list || true
-        fi
-        if [ -f /etc/apt/sources.list.d/proxmox.sources ]; then
-            sed -i 's/enterprise.proxmox.com/download.proxmox.com/g' /etc/apt/sources.list.d/proxmox.sources || true
-        fi
-
-        # Explicitly configure the fallback pve-no-subscription channel cleanly if completely missing
-        if ! grep -q "pve-no-subscription" /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null; then
-            echo "deb http://download.proxmox.com/debian/pve trixie pve-no-subscription" > /etc/apt/sources.list.d/pve-no-sub.list
-        fi
-        log_ok "Proxmox subscription-free configurations synchronized successfully"
-
-        log_step "Synchronizing PVE Distribution components"
+        if [ -f /etc/apt/sources.list.d/pve-enterprise.list ]; then sed -i 's/^deb/#deb/g' /etc/apt/sources.list.d/pve-enterprise.list || true; fi
+        if [ -f /etc/apt/sources.list.d/proxmox.sources ]; then sed -i 's/enterprise.proxmox.com/download.proxmox.com/g' /etc/apt/sources.list.d/proxmox.sources || true; fi
+        if ! grep -q "pve-no-subscription" /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null; then echo "deb http://download.proxmox.com/debian/pve trixie pve-no-subscription" > /etc/apt/sources.list.d/pve-no-sub.list; fi
         env DEBIAN_FRONTEND=noninteractive apt-get update -y >/dev/null 2>&1
         env DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y --allow-downgrades >/dev/null 2>&1
-
     elif [ "$os_type" = "debian" ]; then
-        log_step "Executing apt package updates"
         if [ "$mode" = "proxmox-lxc" ]; then
             pct exec "$target" -- sh -c "env DEBIAN_FRONTEND=noninteractive apt-get update -y && env DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y" >/dev/null 2>&1
         else
             env DEBIAN_FRONTEND=noninteractive apt-get update -y >/dev/null 2>&1
             env DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y >/dev/null 2>&1
         fi
-
     elif [ "$os_type" = "alpine" ]; then
-        log_step "Executing apk container index refreshes"
         run_cmd "$mode" "$target" apk update
         run_cmd "$mode" "$target" apk upgrade
     fi
-    log_ok "Package repository updates complete"
+    log_tui_status "${FG_GRN}" "✓" "UPDATED"
 
-    # 2. Automated Unattended System Upgrades Configurations
-    show_progress "Configuring Auto-Updates" 2 5
+    # 2. Unattended Engine Links
+    show_tui_progress 40
+    log_tui_step "${FG_YLW}" "AUTO" "Injecting unattended processing background engines"
     if [ "$os_type" = "debian" ] || [ "$mode" = "pve-host" ]; then
-        log_step "Injecting automated unattended-upgrades background jobs"
         if [ "$mode" = "pve-host" ]; then
             env DEBIAN_FRONTEND=noninteractive apt-get install -y unattended-upgrades apt-listchanges >/dev/null 2>&1
             debconf-set-selections <<< "unattended-upgrades unattended-upgrades/enable_auto_updates boolean true"
@@ -378,49 +384,33 @@ for i in "${!targets[@]}"; do
             dpkg-reconfigure -f noninteractive unattended-upgrades >/dev/null 2>&1
         fi
     elif [ "$os_type" = "alpine" ]; then
-        log_step "Anchoring system automated periodic cron links"
         run_cmd "$mode" "$target" apk add cronie
         run_cmd "$mode" "$target" rc-update add cronie default || true
         run_cmd "$mode" "$target" rc-service cronie start || true
-
         cron_script="#!/bin/sh\napk update && apk upgrade"
-        if [ "$mode" = "proxmox-lxc" ]; then
-            echo -e "$cron_script" | pct exec "$target" -- tee /etc/periodic/daily/apk-upgrade > /dev/null
-        else
-            echo -e "$cron_script" | tee /etc/periodic/daily/apk-upgrade > /dev/null
-        fi
+        if [ "$mode" = "proxmox-lxc" ]; then echo -e "$cron_script" | pct exec "$target" -- tee /etc/periodic/daily/apk-upgrade > /dev/null; else echo -e "$cron_script" | tee /etc/periodic/daily/apk-upgrade > /dev/null; fi
         run_cmd "$mode" "$target" chmod +x /etc/periodic/daily/apk-upgrade
     fi
-    log_ok "Unattended engine execution parameters established"
+    log_tui_status "${FG_GRN}" "✓" "ACTIVE"
 
-    # 3. Shell Modification Framework & Engine Tool Setup (Starship Prompt Core Engine)
-    show_progress "Installing Starship" 3 5
+    # 3. Starship Target Configurations
+    show_tui_progress 60
+    log_tui_step "${FG_PCH}" "SHSH" "Verifying localized Starship engine prompt presence"
     if ! check_binary "$mode" "$target" "starship"; then
-        log_step "Downloading structural shell binary frameworks"
         if [ "$os_type" = "debian" ]; then run_cmd "$mode" "$target" env DEBIAN_FRONTEND=noninteractive apt-get install -y curl; fi
         if [ "$os_type" = "alpine" ]; then run_cmd "$mode" "$target" apk add curl; fi
-
-        if [ "$mode" = "proxmox-lxc" ]; then
-            pct exec "$target" -- sh -c "curl -sS https://starship.rs/install.sh | sh -s -- -y" >/dev/null 2>&1
-        else
-            sh -c "curl -sS https://starship.rs/install.sh | sh -s -- -y" >/dev/null 2>&1
-        fi
-        log_ok "Starship base prompt package cleanly compiled"
+        if [ "$mode" = "proxmox-lxc" ]; then pct exec "$target" -- sh -c "curl -sS https://starship.rs/install.sh | sh -s -- -y" >/dev/null 2>&1; else sh -c "curl -sS https://starship.rs/install.sh | sh -s -- -y" >/dev/null 2>&1; fi
+        log_tui_status "${FG_GRN}" "✓" "INSTALLED"
     else
-        log_ok "Starship base software package is already present on system filesystem"
+        log_tui_status "${FG_SAP}" "ℹ" "EXISTS"
     fi
 
-    # 4. Global Target Setting Config Dispatches
-    show_progress "Applying Configurations" 4 5
-    log_step "Writing structural visual setting profiles"
+    # 4. Inject Configuration Profiles
+    show_tui_progress 80
+    log_tui_step "${FG_PCH}" "CONF" "Deploying visual parameters and environment variables"
     run_cmd "$mode" "$target" mkdir -p /root/.config
-    if [ "$mode" = "proxmox-lxc" ]; then
-        echo "$STARSHIP_CONFIG_CONTENT" | pct exec "$target" -- tee /root/.config/starship.toml > /dev/null
-    else
-        echo "$STARSHIP_CONFIG_CONTENT" | tee /root/.config/starship.toml > /dev/null
-    fi
+    if [ "$mode" = "proxmox-lxc" ]; then echo "$STARSHIP_CONFIG_CONTENT" | pct exec "$target" -- tee /root/.config/starship.toml > /dev/null; else echo "$STARSHIP_CONFIG_CONTENT" | tee /root/.config/starship.toml > /dev/null; fi
 
-    log_step "Injecting cross-shell boot evaluation flags"
     if check_file "$mode" "$target" "/root/.bashrc"; then
         if [ "$mode" = "proxmox-lxc" ]; then
             if ! pct exec "$target" -- grep -q "starship init bash" /root/.bashrc; then echo 'eval "$(starship init bash)"' | pct exec "$target" -- tee -a /root/.bashrc > /dev/null; fi
@@ -428,7 +418,6 @@ for i in "${!targets[@]}"; do
             if ! grep -q "starship init bash" /root/.bashrc; then echo 'eval "$(starship init bash)"' | tee -a /root/.bashrc > /dev/null; fi
         fi
     fi
-
     if check_file "$mode" "$target" "/root/.zshrc"; then
         if [ "$mode" = "proxmox-lxc" ]; then
             if ! pct exec "$target" -- grep -q "starship init zsh" /root/.zshrc; then echo 'eval "$(starship init zsh)"' | pct exec "$target" -- tee -a /root/.zshrc > /dev/null; fi
@@ -436,7 +425,6 @@ for i in "${!targets[@]}"; do
             if ! grep -q "starship init zsh" /root/.zshrc; then echo 'eval "$(starship init zsh)"' | tee -a /root/.zshrc > /dev/null; fi
         fi
     fi
-
     if [ "$os_type" = "alpine" ] && check_file "$mode" "$target" "/root/.profile"; then
         if [ "$mode" = "proxmox-lxc" ]; then
             if ! pct exec "$target" -- grep -q "starship init" /root/.profile; then echo 'eval "$(starship init posix)"' | pct exec "$target" -- tee -a /root/.profile > /dev/null; fi
@@ -444,24 +432,17 @@ for i in "${!targets[@]}"; do
             if ! grep -q "starship init" /root/.profile; then echo 'eval "$(starship init posix)"' | tee -a /root/.profile > /dev/null; fi
         fi
     fi
-    log_ok "Visual prompt configurations cleanly saved"
+    log_tui_status "${FG_GRN}" "✓" "CONFIGURED"
 
-    # 5. Application Lifecycle Stack Layer Processing (Docker Containers Updates Logic)
-    show_progress "Updating App Containers" 5 5
+    # 5. Application Upgrades Logic
+    show_tui_progress 100
+    log_tui_step "${FG_SAP}" "DCKR" "Processing application container lifecycle updates"
     if check_binary "$mode" "$target" "docker"; then
-        log_step "Scanning filesystem for operational docker-compose environments"
-        if [ "$mode" = "proxmox-lxc" ]; then
-            compose_files=$(pct exec "$target" -- find / -maxdepth 4 -name "docker-compose.yml" -o -name "compose.yml" 2>/dev/null || true)
-        else
-            compose_files=$(find / -maxdepth 4 -name "docker-compose.yml" -o -name "compose.yml" 2>/dev/null || true)
-        fi
-
+        if [ "$mode" = "proxmox-lxc" ]; then compose_files=$(pct exec "$target" -- find / -maxdepth 4 -name "docker-compose.yml" -o -name "compose.yml" 2>/dev/null || true); else compose_files=$(find / -maxdepth 4 -name "docker-compose.yml" -o -name "compose.yml" 2>/dev/null || true); fi
         if [ -n "$compose_files" ]; then
             while read -r compose_path; do
                 [ -z "$compose_path" ] && continue
                 compose_dir=$(dirname "$compose_path")
-                log_step "Pulling upstream dependencies and rebuilding application environment: $compose_dir"
-
                 if [ "$mode" = "proxmox-lxc" ]; then
                     if pct exec "$target" -- docker compose version >/dev/null 2>&1; then pct exec "$target" -- sh -c "cd $compose_dir && docker compose pull && docker compose up -d" >/dev/null 2>&1;
                     elif pct exec "$target" -- docker-compose version >/dev/null 2>&1; then pct exec "$target" -- sh -c "cd $compose_dir && docker-compose pull && docker-compose up -d" >/dev/null 2>&1; fi
@@ -470,13 +451,15 @@ for i in "${!targets[@]}"; do
                     elif docker-compose version >/dev/null 2>&1; then sh -c "cd $compose_dir && docker-compose pull && docker-compose up -d" >/dev/null 2>&1; fi
                 fi
             done <<< "$compose_files"
-            log_ok "All located application compose layers updated successfully"
+            log_tui_status "${FG_GRN}" "✓" "DOCKER COMS"
         else
-            log_ok "No operational docker-compose config contexts found on local paths"
+            log_tui_status "${FG_SAP}" "ℹ" "NO STACKS"
         fi
     else
-        log_ok "Docker core binary is not present on target environment runtime pathways"
+        log_tui_status "${FG_SAP}" "ℹ" "NO ENGINE"
     fi
 done
 
-echo -e "\n${CLR_GRN}[✔ SUCCESS] Maintenance tasks finished across all detected deployment platforms.${CLR_RST}"
+echo -e "\n${FG_GRN}┌────────────────────────────────────────────────────────────────────────┐${RST}"
+echo -e "${FG_GRN}│${RST} ${BG_GRN} ⚡ COMPLETED: ALL DEPLOYMENT NODE TARGETS OPTIMIZED SUCCESSFULLY ${RST}    ${FG_GRN}│${RST}"
+echo -e "${FG_GRN}└────────────────────────────────────────────────────────────────────────┘${RST}"
