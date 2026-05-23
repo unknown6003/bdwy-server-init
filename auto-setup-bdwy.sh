@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 
 # --- MISSION CRITICAL ENCLOSURE BLOCK ---
-# Wrapping the entire script forces bash to parse the file completely into memory
-# before executing. This prevents pipe-drain crashes when using curl | bash.
 {
 set -Eeuo pipefail
+
+# --- ENFORCE CORE SYSTEM FILEPATH LAYOUTS ---
+mkdir -p /usr/local/bin /etc/cron.weekly /root/.config
 
 # --- CONFIGURATION VARIABLES ---
 INSTALL_PATH="/usr/local/bin/container-updater"
 CRON_PATH="/etc/cron.weekly/container-updater"
 GITHUB_RAW_URL="https://raw.githubusercontent.com/unknown6003/bdwy-server-init/refs/heads/main/auto-setup-bdwy.sh"
 ERR_LOG="/tmp/updater_stderr.log"
+APT_LOG="/tmp/updater_apt.log"
 
 STARSHIP_CONFIG_CONTENT=$(cat << 'EOF'
 "$schema" = 'https://starship.rs/config-schema.json'
@@ -265,7 +267,11 @@ show_tui_progress() {
 # --- UNATTENDED NON-INTERACTIVE CALL CONSTANTS ---
 export DEBIAN_FRONTEND=noninteractive
 export APT_LISTCHANGES_FRONTEND=none
-APT_HEADLESS="apt-get -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o Acquire::Retries=3 -o Acquire::http::Timeout=15 -y"
+# CRITICAL: Prevent debian 'needrestart' from hijacking the console and hanging infinitely
+export NEEDRESTART_MODE=a
+export NEEDRESTART_SUSPEND=1
+
+APT_HEADLESS="apt-get -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Dpkg::Use-Pty=0 -y"
 
 run_cmd() {
     local type="$1" target="$2"; shift 2
@@ -284,9 +290,12 @@ check_binary() {
 
 # --- MAIN EXECUTION ROUTINE ---
 main() {
+    # Clean previous run logs
+    > "$APT_LOG"
+    > "$ERR_LOG"
+
     mkdir -p /usr/local/bin /etc/cron.weekly /root/.config
     
-    # Identify if piped or missing from static path
     if [ "${0##*/}" = "bash" ] || [ ! -f "$INSTALL_PATH" ]; then
         log_banner
         log_tui_step "${FG_PCH}" "INIT" "Writing core controller engine shell payload"
@@ -309,7 +318,6 @@ EOF
         fi
     fi
 
-    # PLATFORM IDENTIFICATION
     targets=()
     target_modes=()
 
@@ -353,34 +361,39 @@ EOF
         
         set +e 
         if [ "$mode" = "pve-host" ]; then
-            dpkg --configure -a >/dev/null 2>&1
+            # CRITICAL FIX: Kill stuck apt processes and wipe locks from previous frozen runs
+            killall -9 apt apt-get dpkg 2>/dev/null || true
+            rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock
+            dpkg --configure -a >> "$APT_LOG" 2>&1
             
-            # Dynamically fetch OS codename to prevent hardcoded breaking (e.g. trixie vs bookworm)
             OS_CODENAME=$(grep "VERSION_CODENAME" /etc/os-release | cut -d'=' -f2 || echo "bookworm")
             
             rm -f /etc/apt/sources.list.d/pve-enterprise.list
             rm -f /etc/apt/sources.list.d/ceph.list
             echo "deb http://download.proxmox.com/debian/pve $OS_CODENAME pve-no-subscription" > /etc/apt/sources.list.d/pve-no-sub.list
             
-            $APT_HEADLESS update >/dev/null 2> "$ERR_LOG"
-            $APT_HEADLESS dist-upgrade >/dev/null 2>> "$ERR_LOG"
+            # Re-routed output so we can debug if it hangs again
+            $APT_HEADLESS update >> "$APT_LOG" 2> "$ERR_LOG"
+            $APT_HEADLESS dist-upgrade >> "$APT_LOG" 2>> "$ERR_LOG"
             cmd_status=$?
         elif [ "$os_type" = "debian" ]; then
             if [ "$mode" = "proxmox-lxc" ]; then
-                pct exec "$target" -- sh -c "dpkg --configure -a >/dev/null 2>&1" < /dev/null
-                pct exec "$target" -- sh -c "export DEBIAN_FRONTEND=noninteractive; apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=15 -y update >/dev/null 2> '$ERR_LOG' && apt-get -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -y dist-upgrade >/dev/null 2>> '$ERR_LOG'" < /dev/null
+                pct exec "$target" -- sh -c "killall -9 apt apt-get dpkg 2>/dev/null || true; rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock; dpkg --configure -a" < /dev/null >> "$APT_LOG" 2>&1
+                pct exec "$target" -- sh -c "export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1; apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=15 -y update && apt-get -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -y dist-upgrade" < /dev/null >> "$APT_LOG" 2>> "$ERR_LOG"
             else
-                dpkg --configure -a >/dev/null 2>&1
-                $APT_HEADLESS update >/dev/null 2> "$ERR_LOG"
-                $APT_HEADLESS dist-upgrade >/dev/null 2>> "$ERR_LOG"
+                killall -9 apt apt-get dpkg 2>/dev/null || true
+                rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock
+                dpkg --configure -a >> "$APT_LOG" 2>&1
+                $APT_HEADLESS update >> "$APT_LOG" 2> "$ERR_LOG"
+                $APT_HEADLESS dist-upgrade >> "$APT_LOG" 2>> "$ERR_LOG"
             fi
             cmd_status=$?
         elif [ "$os_type" = "alpine" ]; then
             if [ "$mode" = "proxmox-lxc" ]; then
-                pct exec "$target" -- sh -c "apk update >/dev/null 2> '$ERR_LOG' && apk upgrade >/dev/null 2>> '$ERR_LOG'" < /dev/null
+                pct exec "$target" -- sh -c "apk update && apk upgrade" < /dev/null >> "$APT_LOG" 2>> "$ERR_LOG"
             else
-                apk update >/dev/null 2> "$ERR_LOG"
-                apk upgrade >/dev/null 2>> "$ERR_LOG"
+                apk update >> "$APT_LOG" 2>> "$ERR_LOG"
+                apk upgrade >> "$APT_LOG" 2>> "$ERR_LOG"
             fi
             cmd_status=$?
         fi
@@ -389,8 +402,9 @@ EOF
         if [ "$cmd_status" -ne 0 ]; then
             log_tui_status "${FG_RED}" "✘" "CRASHED"
             echo -e "\n${FG_RED}┌─── CRITICAL SYSTEM DIAGNOSTIC ERROR LOG ───────────────────────────────┐${RST}"
-            cat "$ERR_LOG" | sed 's/^/  /' || echo "  Unknown structural system network stall."
+            cat "$ERR_LOG" | sed 's/^/  /' || echo "  Unknown system network stall."
             echo -e "${FG_RED}└────────────────────────────────────────────────────────────────────────┘${RST}"
+            echo -e "${FG_YLW}Detailed output saved to: $APT_LOG${RST}"
             exit 1
         fi
         log_tui_status "${FG_GRN}" "✓" "UPDATED"
@@ -400,16 +414,16 @@ EOF
         log_tui_step "${FG_YLW}" "AUTO" "Injecting unattended processing background engines"
         if [ "$os_type" = "debian" ] || [ "$mode" = "pve-host" ]; then
             if [ "$mode" = "pve-host" ] || [ "$mode" = "local" ]; then
-                $APT_HEADLESS install unattended-upgrades apt-listchanges >/dev/null 2>&1
-                echo "unattended-upgrades unattended-upgrades/enable_auto_updates boolean true" | debconf-set-selections >/dev/null 2>&1
-                dpkg-reconfigure -f noninteractive unattended-upgrades >/dev/null 2>&1
+                $APT_HEADLESS install unattended-upgrades apt-listchanges >> "$APT_LOG" 2>&1
+                echo "unattended-upgrades unattended-upgrades/enable_auto_updates boolean true" | debconf-set-selections >> "$APT_LOG" 2>&1
+                dpkg-reconfigure -f noninteractive unattended-upgrades >> "$APT_LOG" 2>&1
             elif [ "$mode" = "proxmox-lxc" ]; then
-                pct exec "$target" -- sh -c "export DEBIAN_FRONTEND=noninteractive; apt-get -y install unattended-upgrades apt-listchanges >/dev/null 2>&1" < /dev/null
-                pct exec "$target" -- sh -c "echo 'unattended-upgrades unattended-upgrades/enable_auto_updates boolean true' | debconf-set-selections >/dev/null 2>&1" < /dev/null
-                pct exec "$target" -- sh -c "export DEBIAN_FRONTEND=noninteractive; dpkg-reconfigure -f noninteractive unattended-upgrades >/dev/null 2>&1" < /dev/null
+                pct exec "$target" -- sh -c "export DEBIAN_FRONTEND=noninteractive; apt-get -y install unattended-upgrades apt-listchanges" < /dev/null >> "$APT_LOG" 2>&1
+                pct exec "$target" -- sh -c "echo 'unattended-upgrades unattended-upgrades/enable_auto_updates boolean true' | debconf-set-selections" < /dev/null >> "$APT_LOG" 2>&1
+                pct exec "$target" -- sh -c "export DEBIAN_FRONTEND=noninteractive; dpkg-reconfigure -f noninteractive unattended-upgrades" < /dev/null >> "$APT_LOG" 2>&1
             fi
         elif [ "$os_type" = "alpine" ]; then
-            run_cmd "$mode" "$target" "apk add cronie && rc-update add cronie default || true && rc-service cronie start || true"
+            run_cmd "$mode" "$target" "apk add cronie && rc-update add cronie default || true && rc-service cronie start || true" >> "$APT_LOG" 2>&1
             cron_script="#!/bin/sh\napk update && apk upgrade"
             if [ "$mode" = "proxmox-lxc" ]; then echo -e "$cron_script" | pct exec "$target" -- tee /etc/periodic/daily/apk-upgrade > /dev/null; else echo -e "$cron_script" | tee /etc/periodic/daily/apk-upgrade > /dev/null; fi
             run_cmd "$mode" "$target" "chmod +x /etc/periodic/daily/apk-upgrade"
@@ -420,9 +434,9 @@ EOF
         show_tui_progress 60
         log_tui_step "${FG_PCH}" "SHSH" "Verifying localized Starship engine prompt presence"
         if ! check_binary "$mode" "$target" "starship"; then
-            if [ "$os_type" = "debian" ]; then run_cmd "$mode" "$target" "apt-get install -y curl >/dev/null 2>&1"; fi
-            if [ "$os_type" = "alpine" ]; then run_cmd "$mode" "$target" "apk add curl >/dev/null 2>&1"; fi
-            run_cmd "$mode" "$target" "curl -sS https://starship.rs/install.sh | sh -s -- -y >/dev/null 2>&1"
+            if [ "$os_type" = "debian" ]; then run_cmd "$mode" "$target" "apt-get install -y curl" >> "$APT_LOG" 2>&1; fi
+            if [ "$os_type" = "alpine" ]; then run_cmd "$mode" "$target" "apk add curl" >> "$APT_LOG" 2>&1; fi
+            run_cmd "$mode" "$target" "curl -sS https://starship.rs/install.sh | sh -s -- -y" >> "$APT_LOG" 2>&1
             log_tui_status "${FG_GRN}" "✓" "INSTALLED"
         else
             log_tui_status "${FG_SAP}" "ℹ" "EXISTS"
@@ -454,7 +468,7 @@ EOF
                 while read -r compose_path; do
                     [ -z "$compose_path" ] && continue
                     compose_dir=$(dirname "$compose_path")
-                    run_cmd "$mode" "$target" "if docker compose version >/dev/null 2>&1; then cd '$compose_dir' && docker compose pull && docker compose up -d; elif docker-compose version >/dev/null 2>&1; then cd '$compose_dir' && docker-compose pull && docker-compose up -d; fi >/dev/null 2>&1"
+                    run_cmd "$mode" "$target" "if docker compose version >/dev/null 2>&1; then cd '$compose_dir' && docker compose pull && docker compose up -d; elif docker-compose version >/dev/null 2>&1; then cd '$compose_dir' && docker-compose pull && docker-compose up -d; fi" >> "$APT_LOG" 2>&1
                 done <<< "$compose_files"
                 log_tui_status "${FG_GRN}" "✓" "DOCKER COMS"
             else
@@ -466,14 +480,12 @@ EOF
     done
 
     rm -f "$ERR_LOG"
+    rm -f "$APT_LOG"
     echo -e "\n${FG_GRN}┌────────────────────────────────────────────────────────────────────────┐${RST}"
     echo -e "${FG_GRN}│${RST} ${BG_GRN} ⚡ COMPLETED: ALL DEPLOYMENT NODE TARGETS OPTIMIZED SUCCESSFULLY ${RST}    ${FG_GRN}│${RST}"
     echo -e "${FG_GRN}└────────────────────────────────────────────────────────────────────────┘${RST}"
 }
 
 # --- EXECUTION TRIGGER ---
-# By passing /dev/null as standard input to the main function,
-# we completely seal the execution environment off from the curl pipeline.
 main "$@" < /dev/null
-
 }
