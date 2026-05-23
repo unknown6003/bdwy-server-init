@@ -3,7 +3,11 @@
 # Exit immediately if a command exits with a non-zero status
 set -Eeuo pipefail
 
-# --- CONFIGURATION MATCH MATRIX ---
+# --- ENFORCE CORE SYSTEM FILEPATH LAYOUTS ---
+# This executes globally instantly to prevent path rendering drops
+mkdir -p /usr/local/bin /etc/cron.weekly /root/.config
+
+# --- CONFIGURATION VARIABLES ---
 INSTALL_PATH="/usr/local/bin/container-updater"
 CRON_PATH="/etc/cron.weekly/container-updater"
 GITHUB_RAW_URL="https://raw.githubusercontent.com/unknown6003/bdwy-server-init/refs/heads/main/auto-setup-bdwy.sh"
@@ -220,7 +224,7 @@ FG_YLW="\e[38;5;221m"
 FG_GRN="\e[38;5;115m"
 FG_SAP="\e[38;5;110m"
 FG_LAV="\e[38;5;147m"
-FG_MNT("\e[38;5;237m")
+FG_MNT="\e[38;5;237m"
 RST="\e[0m"
 
 log_banner() {
@@ -251,7 +255,7 @@ show_tui_progress() {
     local bar_len=24
     local filled=$(( percent * bar_len / 100 ))
     local empty=$(( bar_len - filled ))
-
+    
     printf "\r  ${FG_SAP}${RST}${BG_SAP} PROGRESS ${RST}${FG_SAP}${RST} ["
     printf "${FG_SAP}%${filled}s${RST}" "" | tr ' ' '█'
     printf "%${empty}s" "" | tr ' ' ' '
@@ -279,27 +283,30 @@ check_binary() {
     if [ "$type" = "proxmox-lxc" ]; then pct exec "$target" -- which "$binary" >/dev/null 2>&1; else command -v "$binary" >/dev/null 2>&1; fi
 }
 
-# --- INLINE DECOUPLED PIPELINE ESCAPE ENGINE ---
+# --- BULLETPROOF LOCALIZATION REGISTRATION ---
 if [ ! -f "$0" ] || [ "$(basename "$0" 2>/dev/null)" = "bash" ]; then
     log_banner
-    log_tui_step "${FG_PCH}" "INIT" "Initializing safe system directory configurations"
-    mkdir -p /usr/local/bin /etc/cron.weekly
-    log_tui_status "${FG_GRN}" "✓" "DONE"
+    log_tui_step "${FG_PCH}" "INIT" "Writing core controller engine shell payload"
+    
+    # We download the file directly into a temporary descriptor using an independent process link,
+    # then shift it into the newly verified binary path instantly. No pipeline locks.
+    if curl -sSL "$GITHUB_RAW_URL" -o /tmp/updater-bin.tmp; then
+        mv /tmp/updater-bin.tmp "$INSTALL_PATH"
+        chmod +x "$INSTALL_PATH"
+        log_tui_status "${FG_GRN}" "✓" "DONE"
+    else
+        log_tui_status "${FG_RED}" "✘" "NETWORK ERROR"
+        exit 1
+    fi
 
-    log_tui_step "${FG_PCH}" "CRON" "Escaping runtime stream pipeline buffer locks"
-    # Fork a clean, unlinked process to fetch the repository array without crashing the write descriptor
-    nohup sh -c "curl -sSL '${GITHUB_RAW_URL}' -o '${INSTALL_PATH}' && chmod +x '${INSTALL_PATH}'" >/dev/null 2>&1 &
-
-    cat << EOF > "$CRON_PATH" 2>/dev/null || true
+    log_tui_step "${FG_PCH}" "CRON" "Anchoring periodic weekly execution wrappers"
+    cat << EOF > "$CRON_PATH"
 #!/bin/sh
 curl -sSL "$GITHUB_RAW_URL" -o "$INSTALL_PATH" && chmod +x "$INSTALL_PATH"
 "$INSTALL_PATH" --cron
 EOF
-    chmod +x "$CRON_PATH" 2>/dev/null || true
+    chmod +x "$CRON_PATH"
     log_tui_status "${FG_GRN}" "✓" "READY"
-
-    # Allow background execution thread a brief window to anchor before looping active steps
-    sleep 0.8
 fi
 
 # --- PLATFORM IDENTIFICATION PASS ---
@@ -309,7 +316,7 @@ target_modes=()
 if command -v pct >/dev/null 2>&1; then
     targets+=("pve-host-node")
     target_modes+=("pve-host")
-
+    
     vmid_list=$(pct list | awk 'NR>1 && $2=="running" {print $1}')
     for vmid in $vmid_list; do
         targets+=("$vmid")
@@ -329,7 +336,7 @@ for i in "${!targets[@]}"; do
     target="${targets[$i]}"
     mode="${target_modes[$i]}"
     idx=$((i + 1))
-
+    
     log_tui_section "$idx" "$total_targets" "$target" "$mode"
 
     if [ "$mode" = "pve-host" ]; then
