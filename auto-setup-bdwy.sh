@@ -608,7 +608,24 @@ configure_starship_host() {
     cat > /root/.config/starship.toml <<EOF
 ${STARSHIP_TOML_CONTENT}
 EOF
+    cat > /etc/profile.d/starship.sh <<'EOF'
+export STARSHIP_CONFIG=/root/.config/starship.toml
+if command -v starship >/dev/null 2>&1; then
+  case "${SHELL##*/}" in
+    zsh) eval "$(starship init zsh)" ;;
+    bash) eval "$(starship init bash)" ;;
+    *) eval "$(starship init sh)" ;;
+  esac
+fi
+EOF
+    chmod 0644 /etc/profile.d/starship.sh
+    ensure_line_in_file 'export STARSHIP_CONFIG=/root/.config/starship.toml' /root/.profile
+    ensure_line_in_file 'eval "$(starship init sh)"' /root/.profile
+    ensure_line_in_file 'export STARSHIP_CONFIG=/root/.config/starship.toml' /root/.ashrc
+    ensure_line_in_file 'eval "$(starship init sh)"' /root/.ashrc
+    ensure_line_in_file 'export STARSHIP_CONFIG=/root/.config/starship.toml' /root/.bashrc
     ensure_line_in_file 'eval "$(starship init bash)"' /root/.bashrc
+    ensure_line_in_file 'export STARSHIP_CONFIG=/root/.config/starship.toml' /root/.zshrc
     ensure_line_in_file 'eval "$(starship init zsh)"' /root/.zshrc
 }
 
@@ -619,8 +636,26 @@ mkdir -p /root/.config
 cat > /root/.config/starship.toml <<'EOF'
 ${STARSHIP_TOML_CONTENT}
 EOF
-touch /root/.bashrc /root/.zshrc
+mkdir -p /etc/profile.d
+cat > /etc/profile.d/starship.sh <<'EOF'
+export STARSHIP_CONFIG=/root/.config/starship.toml
+if command -v starship >/dev/null 2>&1; then
+  case \"\${SHELL##*/}\" in
+    zsh) eval \"\$(starship init zsh)\" ;;
+    bash) eval \"\$(starship init bash)\" ;;
+    *) eval \"\$(starship init sh)\" ;;
+  esac
+fi
+EOF
+chmod 0644 /etc/profile.d/starship.sh
+touch /root/.profile /root/.ashrc /root/.bashrc /root/.zshrc
+grep -Fqx 'export STARSHIP_CONFIG=/root/.config/starship.toml' /root/.profile || echo 'export STARSHIP_CONFIG=/root/.config/starship.toml' >> /root/.profile
+grep -Fqx 'eval \"\$(starship init sh)\"' /root/.profile || echo 'eval \"\$(starship init sh)\"' >> /root/.profile
+grep -Fqx 'export STARSHIP_CONFIG=/root/.config/starship.toml' /root/.ashrc || echo 'export STARSHIP_CONFIG=/root/.config/starship.toml' >> /root/.ashrc
+grep -Fqx 'eval \"\$(starship init sh)\"' /root/.ashrc || echo 'eval \"\$(starship init sh)\"' >> /root/.ashrc
+grep -Fqx 'export STARSHIP_CONFIG=/root/.config/starship.toml' /root/.bashrc || echo 'export STARSHIP_CONFIG=/root/.config/starship.toml' >> /root/.bashrc
 grep -Fqx 'eval \"\$(starship init bash)\"' /root/.bashrc || echo 'eval \"\$(starship init bash)\"' >> /root/.bashrc
+grep -Fqx 'export STARSHIP_CONFIG=/root/.config/starship.toml' /root/.zshrc || echo 'export STARSHIP_CONFIG=/root/.config/starship.toml' >> /root/.zshrc
 grep -Fqx 'eval \"\$(starship init zsh)\"' /root/.zshrc || echo 'eval \"\$(starship init zsh)\"' >> /root/.zshrc
 "
 }
