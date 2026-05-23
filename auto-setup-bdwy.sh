@@ -232,6 +232,19 @@ EOF
     shopt -u nullglob
 }
 
+detect_container_pkg_manager() {
+    local ctid="$1"
+    pct exec "$ctid" -- sh -lc '
+        if command -v apt-get >/dev/null 2>&1; then echo apt; exit 0; fi
+        if command -v apk >/dev/null 2>&1; then echo apk; exit 0; fi
+        if command -v dnf >/dev/null 2>&1; then echo dnf; exit 0; fi
+        if command -v yum >/dev/null 2>&1; then echo yum; exit 0; fi
+        if command -v pacman >/dev/null 2>&1; then echo pacman; exit 0; fi
+        if command -v zypper >/dev/null 2>&1; then echo zypper; exit 0; fi
+        echo unknown
+    '
+}
+
 # --- MAIN EXECUTION ---
 if [ -t 1 ]; then
     clear
@@ -273,7 +286,31 @@ for target in "${targets[@]}"; do
         # Force IPv4 and short timeout for speed
         exec_live "apt-get update -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=5"
     else
-        exec_live "pct exec $target -- apt-get update -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=5"
+        pkg_mgr="$(detect_container_pkg_manager "$target")"
+        case "$pkg_mgr" in
+            apt)
+                exec_live "pct exec $target -- apt-get update -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=5"
+                ;;
+            apk)
+                exec_live "pct exec $target -- apk update"
+                ;;
+            dnf)
+                exec_live "pct exec $target -- dnf -y makecache"
+                ;;
+            yum)
+                exec_live "pct exec $target -- yum makecache -y"
+                ;;
+            pacman)
+                exec_live "pct exec $target -- pacman -Sy --noconfirm"
+                ;;
+            zypper)
+                exec_live "pct exec $target -- zypper --non-interactive refresh"
+                ;;
+            *)
+                update_status "${FG_YLW}⚠ Unsupported package manager in CT ${target}; skipping${RST}"
+                continue
+                ;;
+        esac
     fi
     update_status "${FG_GRN}✓ Repository Synced${RST}"
 
@@ -282,7 +319,26 @@ for target in "${targets[@]}"; do
     if [ "$target" == "pve-host-node" ]; then
         exec_live "apt-get dist-upgrade -y -o Dpkg::Options::=--force-confold"
     else
-        exec_live "pct exec $target -- apt-get dist-upgrade -y -o Dpkg::Options::=--force-confold"
+        case "$pkg_mgr" in
+            apt)
+                exec_live "pct exec $target -- apt-get dist-upgrade -y -o Dpkg::Options::=--force-confold"
+                ;;
+            apk)
+                exec_live "pct exec $target -- apk upgrade --no-cache"
+                ;;
+            dnf)
+                exec_live "pct exec $target -- dnf -y upgrade --refresh"
+                ;;
+            yum)
+                exec_live "pct exec $target -- yum -y update"
+                ;;
+            pacman)
+                exec_live "pct exec $target -- pacman -Syu --noconfirm"
+                ;;
+            zypper)
+                exec_live "pct exec $target -- zypper --non-interactive update"
+                ;;
+        esac
     fi
     update_status "${FG_GRN}✓ System Upgraded${RST}"
 
@@ -291,7 +347,28 @@ for target in "${targets[@]}"; do
     if [ "$target" == "pve-host-node" ]; then
         exec_live "apt-get autoremove -y && apt-get clean"
     else
-        exec_live "pct exec $target -- bash -lc 'apt-get autoremove -y && apt-get clean'"
+        case "$pkg_mgr" in
+            apt)
+                exec_live "pct exec $target -- sh -lc 'apt-get autoremove -y && apt-get clean'"
+                ;;
+            apk)
+                exec_live "pct exec $target -- sh -lc 'apk cache clean || rm -rf /var/cache/apk/*'"
+                ;;
+            dnf)
+                exec_live "pct exec $target -- dnf -y autoremove"
+                exec_live "pct exec $target -- dnf clean all"
+                ;;
+            yum)
+                exec_live "pct exec $target -- yum -y autoremove || true"
+                exec_live "pct exec $target -- yum clean all"
+                ;;
+            pacman)
+                exec_live "pct exec $target -- sh -lc 'pacman -Scc --noconfirm || true'"
+                ;;
+            zypper)
+                exec_live "pct exec $target -- zypper --non-interactive clean --all"
+                ;;
+        esac
     fi
     update_status "${FG_GRN}✓ Disk Space Reclaimed${RST}"
 done
