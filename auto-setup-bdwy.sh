@@ -381,6 +381,20 @@ exec_live() {
     ui_set result "${FG_GRN}Completed${RST}"
 }
 
+exec_try() {
+    local cmd="$1"
+    local log_file="/tmp/updater_last.log"
+    ui_set action "Running: $cmd"
+    ui_set result "${FG_BLU}In Progress${RST}"
+    if ! bash -c "$cmd" > "$log_file" 2>&1; then
+        ui_set result "${FG_RED}Failed${RST}"
+        tail -n 80 "$log_file"
+        return 1
+    fi
+    ui_set result "${FG_GRN}Completed${RST}"
+    return 0
+}
+
 exec_live_fn() {
     local fn_name="$1"
     local log_file="/tmp/updater_last.log"
@@ -753,6 +767,7 @@ fi
 # 3. Processing Loop
 total_targets="${#targets[@]}"
 target_index=0
+failed_targets=()
 for target in "${targets[@]}"; do
     target_index=$((target_index + 1))
     ui_set target "$target"
@@ -826,7 +841,14 @@ for target in "${targets[@]}"; do
                 exec_live "pct exec $target -- apt-get dist-upgrade -y -o Dpkg::Options::=--force-confold"
                 ;;
             apk)
-                exec_live "pct exec $target -- apk upgrade --no-cache"
+                if ! exec_try "pct exec $target -- sh -lc 'apk fix --no-cache || true; apk upgrade --no-cache'"; then
+                    update_status "${FG_YLW}⚠ CT ${target}: apk upgrade failed, running repair and one retry${RST}"
+                    if ! exec_try "pct exec $target -- sh -lc 'apk fix --no-cache && apk upgrade --no-cache && apk fix --no-cache'"; then
+                        failed_targets+=("$target:apk-upgrade")
+                        update_status "${FG_RED}✗ CT ${target} upgrade failed after retry${RST}"
+                        continue
+                    fi
+                fi
                 ;;
             dnf)
                 exec_live "pct exec $target -- dnf -y upgrade --refresh"
@@ -878,7 +900,12 @@ done
 
 ui_set phase "DONE"
 ui_set action "Optimization complete."
-ui_set result "${FG_GRN}⚡ All Targets Updated${RST}"
+if [ "${#failed_targets[@]}" -eq 0 ]; then
+    ui_set result "${FG_GRN}⚡ All Targets Updated${RST}"
+else
+    ui_set result "${FG_YLW}⚠ Completed with ${#failed_targets[@]} target failure(s)${RST}"
+    echo -e "${FG_YLW}Failed targets:${RST} ${failed_targets[*]}"
+fi
 if [ "$IS_TTY" -ne 1 ]; then
     echo -e "\n${FG_GRN}⚡ Optimization Complete.${RST}"
 fi
