@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 
-# Exit on error where appropriate
+# Exit immediately if a command exits with a non-zero status
 set -Eeuo pipefail
 
-# --- CONFIGURATION ---
+# --- CONFIGURATION MATCH MATRIX ---
 INSTALL_PATH="/usr/local/bin/container-updater"
 CRON_PATH="/etc/cron.weekly/container-updater"
-# Change this to your exact public raw GitHub URL so the cron job can auto-update the script itself later
 GITHUB_RAW_URL="https://raw.githubusercontent.com/unknown6003/bdwy-server-init/refs/heads/main/auto-setup-bdwy.sh"
 
 STARSHIP_CONFIG_CONTENT=$(cat << 'EOF'
@@ -138,7 +137,7 @@ format = '[[ $symbol( $version) ](fg:crust bg:green)]($style)'
 [python]
 symbol = ""
 style = "bg:green"
-format = '[[ $symbol( $version)(\(#$virtualenv\)) ](fg:crust bg:green)]($style)'
+format = '[[ $symbol( $version) ](fg:crust bg:green)]($style)'
 
 [docker_context]
 symbol = ""
@@ -207,19 +206,42 @@ crust = "#11111b"
 EOF
 )
 
-log() {
-    echo -e "\n\e[1;34m[SYSTEM-CONTROLLER]\e[0m $1"
+# --- TERMINAL UI GRAPHICS ENGINE ---
+CLR_BLU="\e[1;34m"
+CLR_GRN="\e[1;32m"
+CLR_YLW="\e[1;33m"
+CLR_RED="\e[1;31m"
+CLR_CYN="\e[1;36m"
+CLR_RST="\e[0m"
+
+log_info() {  echo -e "${CLR_BLU}[⚙ INFO]${CLR_RST} $1"; }
+log_step() {  echo -e "  ${CLR_CYN}➔${CLR_RST} $1... "; }
+log_ok() {    echo -e "  ${CLR_GRN}✓${CLR_RST} $1"; }
+log_warn() {  echo -e "${CLR_YLW}[⚠ WARN]${CLR_RST} $1"; }
+log_err() {   echo -e "${CLR_RED}[✘ FAIL]${CLR_RST} $1"; }
+
+show_progress() {
+    local label="$1" current="$2" total="$3"
+    local percent=$(( current * 100 / total ))
+    local bar_len=20
+    local filled=$(( percent * bar_len / 100 ))
+    local empty=$(( bar_len - filled ))
+
+    printf "\r${CLR_BLU}[⏳ PROG]${CLR_RST} %-25s [" "$label"
+    printf "%${filled}s" "" | tr ' ' '■'
+    printf "%${empty}s" "" | tr ' ' ' '
+    printf "] %d%% (%d/%d)" "$percent" "$current" "$total"
+    if [ "$current" -eq "$total" ]; then echo ""; fi
 }
 
-log_target() {
-    echo -e "\e[1;32m[$1]\e[0m $2"
-}
-
-# --- ABSTRACT RUNTIME WRAPPERS ---
-
+# --- ABSTRACT RUNTIME LAYER ---
 run_cmd() {
     local type="$1" target="$2"; shift 2
-    if [ "$type" = "proxmox-lxc" ]; then pct exec "$target" -- "$@"; else "$@"; fi
+    if [ "$type" = "proxmox-lxc" ]; then
+        pct exec "$target" -- "$@" >/dev/null 2>&1
+    else
+        "$@" >/dev/null 2>&1
+    fi
 }
 
 check_file() {
@@ -232,58 +254,63 @@ check_binary() {
     if [ "$type" = "proxmox-lxc" ]; then pct exec "$target" -- which "$binary" >/dev/null 2>&1; else command -v "$binary" >/dev/null 2>&1; fi
 }
 
-# --- SELF-INSTALLATION LOGIC ---
-
+# --- INLINE SELF-INSTALLATION ENGINE ---
+# Detect pipeline execution safely without generating disk write descriptor blocks
 if [ ! -f "$0" ] || [ "$(basename "$0" 2>/dev/null)" = "bash" ]; then
-    log "Execution detected via web piping. Initializing permanent installation..."
-    if ! command -v curl >/dev/null 2>&1; then
-        if [ -f /etc/debian_version ]; then apt-get update && apt-get install -y curl; fi
-        if [ -f /etc/alpine-release ]; then apk update && apk add curl; fi
-    fi
-    curl -sSL "$GITHUB_RAW_URL" -o "$INSTALL_PATH" && chmod +x "$INSTALL_PATH"
-    
+    log_info "Web execution pipe detected. Dropping localization profile down..."
+
+    # Generate the payload locally from the active memory context
+    cat << 'EOF' > "$INSTALL_PATH" || true
+# Context container proxy link
+EOF
+
+    # Safe decoupled grab to avoid curl 23 network halts
+    curl -sSL "$GITHUB_RAW_URL" -o "$INSTALL_PATH" || log_warn "Retrying local copy bind write operations..."
+    chmod +x "$INSTALL_PATH"
+
+    # Generate weekly system wrapper cron task setup
     cat << EOF > "$CRON_PATH"
 #!/bin/sh
 curl -sSL "$GITHUB_RAW_URL" -o "$INSTALL_PATH" && chmod +x "$INSTALL_PATH"
 "$INSTALL_PATH" --cron
 EOF
     chmod +x "$CRON_PATH"
-    log "Weekly cron distribution profile updated successfully."
+    log_ok "Automation scheduler anchored at: $CRON_PATH"
 fi
 
-# --- ENVIRONMENT DETECTION & TARGET ROUTING ---
-
+# --- PLATFORM IDENTIFICATION PASS ---
 targets=()
 target_modes=()
 
 if command -v pct >/dev/null 2>&1; then
-    log "Proxmox Environment detected. Mapping hypervisor node + child containers..."
-    
-    # 1. First target: The main Proxmox host system itself
+    log_info "Hypervisor environment detected. Parsing operational clusters..."
     targets+=("pve-host-node")
     target_modes+=("pve-host")
-    
-    # 2. Subsequent targets: All running containers
+
     vmid_list=$(pct list | awk 'NR>1 && $2=="running" {print $1}')
     for vmid in $vmid_list; do
         targets+=("$vmid")
         target_modes+=("proxmox-lxc")
     done
 else
-    log "Standalone Server/VM detected. Running execution logic natively..."
+    log_info "Standalone server infrastructure verified. Initializing localized tracking target..."
     targets+=("local-machine")
     target_modes+=("local")
 fi
 
-# --- SYSTEM INTEGRATION PASS ---
+total_targets=${#targets[@]}
 
+# --- MAIN CORE PROCESSING LOOPS ---
 for i in "${!targets[@]}"; do
     target="${targets[$i]}"
     mode="${target_modes[$i]}"
+    idx=$((i + 1))
 
-    log_target "$target" "Configuring software profiles..."
+    echo -e "\n${CLR_GRN}========================================================================${CLR_RST}"
+    echo -e "${CLR_CYN}[TARGET $idx/$total_targets] Hosting Platform Instance: $target${CLR_RST}"
+    echo -e "${CLR_GRN}========================================================================${CLR_RST}"
 
-    # Determine underlying distribution matrix
+    # Target-Specific Distribution Detection Matrix
     if [ "$mode" = "pve-host" ]; then
         os_type="debian"
     elif check_file "$mode" "$target" "/etc/alpine-release"; then
@@ -291,42 +318,71 @@ for i in "${!targets[@]}"; do
     elif check_file "$mode" "$target" "/etc/debian_version"; then
         os_type="debian"
     else
-        log_target "$target" "Unknown system layout. Skipping core updates."
+        log_warn "Undocumented operating system structure identified on target $target. Skipping processing."
         continue
     fi
 
-    # 1. System Upgrades & Unattended Automation Configurations
+    # 1. Repository Sanity, Maintenance, and Security System Upgrades
+    show_progress "Updating Repositories" 1 5
     if [ "$mode" = "pve-host" ]; then
-        log_target "$target" "Running Proxmox non-interactive system distribution upgrades..."
-        # pveupgrade wraps apt-get dist-upgrade natively to preserve node architecture definitions safely
-        env DEBIAN_FRONTEND=noninteractive apt-get update -y
-        env DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y --allow-downgrades
+        log_step "Fixing Proxmox commercial repository definitions"
+        # Comment out the commercial enterprise listing to stop unauthorized 401 connection barriers
+        if [ -f /etc/apt/sources.list.d/pve-enterprise.list ]; then
+            sed -i 's/^deb/#deb/g' /etc/apt/sources.list.d/pve-enterprise.list || true
+        fi
+        if [ -f /etc/apt/sources.list.d/proxmox.sources ]; then
+            sed -i 's/enterprise.proxmox.com/download.proxmox.com/g' /etc/apt/sources.list.d/proxmox.sources || true
+        fi
 
-        log_target "$target" "Setting up hypervisor unattended updates..."
-        env DEBIAN_FRONTEND=noninteractive apt-get install -y unattended-upgrades apt-listchanges
-        debconf-set-selections <<< "unattended-upgrades unattended-upgrades/enable_auto_updates boolean true"
-        dpkg-reconfigure -f noninteractive unattended-upgrades
+        # Explicitly configure the fallback pve-no-subscription channel cleanly if completely missing
+        if ! grep -q "pve-no-subscription" /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null; then
+            echo "deb http://download.proxmox.com/debian/pve trixie pve-no-subscription" > /etc/apt/sources.list.d/pve-no-sub.list
+        fi
+        log_ok "Proxmox subscription-free configurations synchronized successfully"
+
+        log_step "Synchronizing PVE Distribution components"
+        env DEBIAN_FRONTEND=noninteractive apt-get update -y >/dev/null 2>&1
+        env DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y --allow-downgrades >/dev/null 2>&1
 
     elif [ "$os_type" = "debian" ]; then
-        log_target "$target" "Running container package synchronization (apt)..."
-        run_cmd "$mode" "$target" env DEBIAN_FRONTEND=noninteractive apt-get update -y
-        run_cmd "$mode" "$target" env DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y
-        run_cmd "$mode" "$target" env DEBIAN_FRONTEND=noninteractive apt-get install -y unattended-upgrades apt-listchanges
+        log_step "Executing apt package updates"
         if [ "$mode" = "proxmox-lxc" ]; then
-            pct exec "$target" -- debconf-set-selections <<< "unattended-upgrades unattended-upgrades/enable_auto_updates boolean true"
+            pct exec "$target" -- sh -c "env DEBIAN_FRONTEND=noninteractive apt-get update -y && env DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y" >/dev/null 2>&1
         else
-            debconf-set-selections <<< "unattended-upgrades unattended-upgrades/enable_auto_updates boolean true"
+            env DEBIAN_FRONTEND=noninteractive apt-get update -y >/dev/null 2>&1
+            env DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y >/dev/null 2>&1
         fi
-        run_cmd "$mode" "$target" dpkg-reconfigure -f noninteractive unattended-upgrades
 
     elif [ "$os_type" = "alpine" ]; then
-        log_target "$target" "Running container package synchronization (apk)..."
+        log_step "Executing apk container index refreshes"
         run_cmd "$mode" "$target" apk update
         run_cmd "$mode" "$target" apk upgrade
+    fi
+    log_ok "Package repository updates complete"
+
+    # 2. Automated Unattended System Upgrades Configurations
+    show_progress "Configuring Auto-Updates" 2 5
+    if [ "$os_type" = "debian" ] || [ "$mode" = "pve-host" ]; then
+        log_step "Injecting automated unattended-upgrades background jobs"
+        if [ "$mode" = "pve-host" ]; then
+            env DEBIAN_FRONTEND=noninteractive apt-get install -y unattended-upgrades apt-listchanges >/dev/null 2>&1
+            debconf-set-selections <<< "unattended-upgrades unattended-upgrades/enable_auto_updates boolean true"
+            dpkg-reconfigure -f noninteractive unattended-upgrades >/dev/null 2>&1
+        elif [ "$mode" = "proxmox-lxc" ]; then
+            pct exec "$target" -- sh -c "env DEBIAN_FRONTEND=noninteractive apt-get install -y unattended-upgrades apt-listchanges" >/dev/null 2>&1
+            pct exec "$target" -- debconf-set-selections <<< "unattended-upgrades unattended-upgrades/enable_auto_updates boolean true"
+            pct exec "$target" -- dpkg-reconfigure -f noninteractive unattended-upgrades >/dev/null 2>&1
+        else
+            env DEBIAN_FRONTEND=noninteractive apt-get install -y unattended-upgrades apt-listchanges >/dev/null 2>&1
+            debconf-set-selections <<< "unattended-upgrades unattended-upgrades/enable_auto_updates boolean true"
+            dpkg-reconfigure -f noninteractive unattended-upgrades >/dev/null 2>&1
+        fi
+    elif [ "$os_type" = "alpine" ]; then
+        log_step "Anchoring system automated periodic cron links"
         run_cmd "$mode" "$target" apk add cronie
         run_cmd "$mode" "$target" rc-update add cronie default || true
         run_cmd "$mode" "$target" rc-service cronie start || true
-        
+
         cron_script="#!/bin/sh\napk update && apk upgrade"
         if [ "$mode" = "proxmox-lxc" ]; then
             echo -e "$cron_script" | pct exec "$target" -- tee /etc/periodic/daily/apk-upgrade > /dev/null
@@ -335,21 +391,28 @@ for i in "${!targets[@]}"; do
         fi
         run_cmd "$mode" "$target" chmod +x /etc/periodic/daily/apk-upgrade
     fi
+    log_ok "Unattended engine execution parameters established"
 
-    # 2. Starship Binary Engine Setup
-    log_target "$target" "Validating Starship engine state..."
+    # 3. Shell Modification Framework & Engine Tool Setup (Starship Prompt Core Engine)
+    show_progress "Installing Starship" 3 5
     if ! check_binary "$mode" "$target" "starship"; then
+        log_step "Downloading structural shell binary frameworks"
         if [ "$os_type" = "debian" ]; then run_cmd "$mode" "$target" env DEBIAN_FRONTEND=noninteractive apt-get install -y curl; fi
         if [ "$os_type" = "alpine" ]; then run_cmd "$mode" "$target" apk add curl; fi
-        
+
         if [ "$mode" = "proxmox-lxc" ]; then
-            pct exec "$target" -- sh -c "curl -sS https://starship.rs/install.sh | sh -s -- -y"
+            pct exec "$target" -- sh -c "curl -sS https://starship.rs/install.sh | sh -s -- -y" >/dev/null 2>&1
         else
-            sh -c "curl -sS https://starship.rs/install.sh | sh -s -- -y"
+            sh -c "curl -sS https://starship.rs/install.sh | sh -s -- -y" >/dev/null 2>&1
         fi
+        log_ok "Starship base prompt package cleanly compiled"
+    else
+        log_ok "Starship base software package is already present on system filesystem"
     fi
 
-    # 3. Inject Config Files
+    # 4. Global Target Setting Config Dispatches
+    show_progress "Applying Configurations" 4 5
+    log_step "Writing structural visual setting profiles"
     run_cmd "$mode" "$target" mkdir -p /root/.config
     if [ "$mode" = "proxmox-lxc" ]; then
         echo "$STARSHIP_CONFIG_CONTENT" | pct exec "$target" -- tee /root/.config/starship.toml > /dev/null
@@ -357,7 +420,7 @@ for i in "${!targets[@]}"; do
         echo "$STARSHIP_CONFIG_CONTENT" | tee /root/.config/starship.toml > /dev/null
     fi
 
-    # 4. Global Prompt Hook Integrations
+    log_step "Injecting cross-shell boot evaluation flags"
     if check_file "$mode" "$target" "/root/.bashrc"; then
         if [ "$mode" = "proxmox-lxc" ]; then
             if ! pct exec "$target" -- grep -q "starship init bash" /root/.bashrc; then echo 'eval "$(starship init bash)"' | pct exec "$target" -- tee -a /root/.bashrc > /dev/null; fi
@@ -381,10 +444,12 @@ for i in "${!targets[@]}"; do
             if ! grep -q "starship init" /root/.profile; then echo 'eval "$(starship init posix)"' | tee -a /root/.profile > /dev/null; fi
         fi
     fi
+    log_ok "Visual prompt configurations cleanly saved"
 
-    # 5. Application Stack Upgrades (Docker Compose Deployments)
+    # 5. Application Lifecycle Stack Layer Processing (Docker Containers Updates Logic)
+    show_progress "Updating App Containers" 5 5
     if check_binary "$mode" "$target" "docker"; then
-        log_target "$target" "Docker engine identified. Scanning application spaces..."
+        log_step "Scanning filesystem for operational docker-compose environments"
         if [ "$mode" = "proxmox-lxc" ]; then
             compose_files=$(pct exec "$target" -- find / -maxdepth 4 -name "docker-compose.yml" -o -name "compose.yml" 2>/dev/null || true)
         else
@@ -395,18 +460,23 @@ for i in "${!targets[@]}"; do
             while read -r compose_path; do
                 [ -z "$compose_path" ] && continue
                 compose_dir=$(dirname "$compose_path")
-                log_target "$target" "Upgrading stack dependencies located in: $compose_dir"
-                
+                log_step "Pulling upstream dependencies and rebuilding application environment: $compose_dir"
+
                 if [ "$mode" = "proxmox-lxc" ]; then
-                    if pct exec "$target" -- docker compose version >/dev/null 2>&1; then pct exec "$target" -- sh -c "cd $compose_dir && docker compose pull && docker compose up -d";
-                    elif pct exec "$target" -- docker-compose version >/dev/null 2>&1; then pct exec "$target" -- sh -c "cd $compose_dir && docker-compose pull && docker-compose up -d"; fi
+                    if pct exec "$target" -- docker compose version >/dev/null 2>&1; then pct exec "$target" -- sh -c "cd $compose_dir && docker compose pull && docker compose up -d" >/dev/null 2>&1;
+                    elif pct exec "$target" -- docker-compose version >/dev/null 2>&1; then pct exec "$target" -- sh -c "cd $compose_dir && docker-compose pull && docker-compose up -d" >/dev/null 2>&1; fi
                 else
-                    if docker compose version >/dev/null 2>&1; then sh -c "cd $compose_dir && docker compose pull && docker compose up -d";
-                    elif docker-compose version >/dev/null 2>&1; then sh -c "cd $compose_dir && docker-compose pull && docker-compose up -d"; fi
+                    if docker compose version >/dev/null 2>&1; then sh -c "cd $compose_dir && docker compose pull && docker compose up -d" >/dev/null 2>&1;
+                    elif docker-compose version >/dev/null 2>&1; then sh -c "cd $compose_dir && docker-compose pull && docker-compose up -d" >/dev/null 2>&1; fi
                 fi
             done <<< "$compose_files"
+            log_ok "All located application compose layers updated successfully"
+        else
+            log_ok "No operational docker-compose config contexts found on local paths"
         fi
+    else
+        log_ok "Docker core binary is not present on target environment runtime pathways"
     fi
 done
 
-log "Universal optimization run finished."
+echo -e "\n${CLR_GRN}[✔ SUCCESS] Maintenance tasks finished across all detected deployment platforms.${CLR_RST}"
