@@ -9,7 +9,6 @@ mkdir -p /usr/local/bin /etc/cron.weekly /root/.config
 # --- CONFIGURATION VARIABLES ---
 INSTALL_PATH="/usr/local/bin/container-updater"
 CRON_PATH="/etc/cron.weekly/container-updater"
-# Ensure this exact path matches your real public file on GitHub!
 GITHUB_RAW_URL="https://raw.githubusercontent.com/unknown6003/bdwy-server-init/refs/heads/main/auto-setup-bdwy.sh"
 
 STARSHIP_CONFIG_CONTENT=$(cat << 'EOF'
@@ -267,20 +266,20 @@ show_tui_progress() {
 run_cmd() {
     local type="$1" target="$2"; shift 2
     if [ "$type" = "proxmox-lxc" ]; then
-        pct exec "$target" -- "$@" >/dev/null 2>&1
+        pct exec "$target" -- "$@" < /dev/null
     else
-        "$@" >/dev/null 2>&1
+        "$@" < /dev/null
     fi
 }
 
 check_file() {
     local type="$1" target="$2" path="$3"
-    if [ "$type" = "proxmox-lxc" ]; then pct exec "$target" -- [ -f "$path" ]; else [ -f "$path" ]; fi
+    if [ "$type" = "proxmox-lxc" ]; then pct exec "$target" -- [ -f "$path" ] < /dev/null; else [ -f "$path" ]; fi
 }
 
 check_binary() {
     local type="$1" target="$2" binary="$3"
-    if [ "$type" = "proxmox-lxc" ]; then pct exec "$target" -- which "$binary" >/dev/null 2>&1; else command -v "$binary" >/dev/null 2>&1; fi
+    if [ "$type" = "proxmox-lxc" ]; then pct exec "$target" -- which "$binary" < /dev/null >/dev/null 2>&1; else command -v "$binary" < /dev/null >/dev/null 2>&1; fi
 }
 
 # --- DECOUPLED PIPELINE REGISTRATION ENGINE ---
@@ -288,8 +287,7 @@ if [ ! -f "$0" ] || [ "$(basename "$0" 2>/dev/null)" = "bash" ]; then
     log_banner
     log_tui_step "${FG_PCH}" "INIT" "Writing core controller engine shell payload"
     
-    # -f forces curl to return an error status on HTTP 404 instead of saving HTML
-    if curl -fsSL "$GITHUB_RAW_URL" -o /tmp/updater-bin.tmp; then
+    if curl -fsSL "$GITHUB_RAW_URL" -o /tmp/updater-bin.tmp < /dev/null; then
         mv /tmp/updater-bin.tmp "$INSTALL_PATH"
         chmod +x "$INSTALL_PATH"
         log_tui_status "${FG_GRN}" "✓" "DONE"
@@ -303,8 +301,7 @@ EOF
         chmod +x "$CRON_PATH"
         log_tui_status "${FG_GRN}" "✓" "READY"
     else
-        # If GitHub hits a 404, notify but DO NOT EXIT. Fallback to inline processing immediately.
-        log_tui_status "${FG_RED}" "⚠" "FALLBACK ACTIVE (URL 404)"
+        log_tui_status "${FG_RED}" "⚠" "FALLBACK ACTIVE (LOCAL RECOVERY MODE)"
     fi
 fi
 
@@ -327,6 +324,9 @@ else
 fi
 
 total_targets=${#targets[@]}
+
+# Create a secure scratch space for error capture
+ERR_LOG="/tmp/updater_stderr.log"
 
 # --- MAIN TUI CORE RUNTIME ---
 for i in "${!targets[@]}"; do
@@ -351,22 +351,42 @@ for i in "${!targets[@]}"; do
     # 1. Package Synchronization
     show_tui_progress 20
     log_tui_step "${FG_YLW}" "REPO" "Refreshing system package architectures"
+    
+    set +e # Temporarily allow non-zero returns so we can catch errors explicitly
     if [ "$mode" = "pve-host" ]; then
         if [ -f /etc/apt/sources.list.d/pve-enterprise.list ]; then sed -i 's/^deb/#deb/g' /etc/apt/sources.list.d/pve-enterprise.list || true; fi
         if [ -f /etc/apt/sources.list.d/proxmox.sources ]; then sed -i 's/enterprise.proxmox.com/download.proxmox.com/g' /etc/apt/sources.list.d/proxmox.sources || true; fi
         if ! grep -q "pve-no-subscription" /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null; then echo "deb http://download.proxmox.com/debian/pve trixie pve-no-subscription" > /etc/apt/sources.list.d/pve-no-sub.list; fi
-        env DEBIAN_FRONTEND=noninteractive apt-get update -y >/dev/null 2>&1
-        env DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y --allow-downgrades >/dev/null 2>&1
+        
+        # Run package sync while routing standard streams safely away from stdin
+        env DEBIAN_FRONTEND=noninteractive apt-get update -y < /dev/null >/dev/null 2> "$ERR_LOG"
+        env DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y --allow-downgrades < /dev/null >/dev/null 2>> "$ERR_LOG"
+        cmd_status=$?
     elif [ "$os_type" = "debian" ]; then
         if [ "$mode" = "proxmox-lxc" ]; then
-            pct exec "$target" -- sh -c "env DEBIAN_FRONTEND=noninteractive apt-get update -y && env DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y" >/dev/null 2>&1
+            pct exec "$target" -- sh -c "env DEBIAN_FRONTEND=noninteractive apt-get update -y && env DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y" < /dev/null >/dev/null 2> "$ERR_LOG"
         else
-            env DEBIAN_FRONTEND=noninteractive apt-get update -y >/dev/null 2>&1
-            env DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y >/dev/null 2>&1
+            env DEBIAN_FRONTEND=noninteractive apt-get update -y < /dev/null >/dev/null 2> "$ERR_LOG"
+            env DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y < /dev/null >/dev/null 2>> "$ERR_LOG"
         fi
+        cmd_status=$?
     elif [ "$os_type" = "alpine" ]; then
-        run_cmd "$mode" "$target" apk update
-        run_cmd "$mode" "$target" apk upgrade
+        if [ "$mode" = "proxmox-lxc" ]; then
+            pct exec "$target" -- sh -c "apk update && apk upgrade" < /dev/null >/dev/null 2> "$ERR_LOG"
+        else
+            apk update < /dev/null >/dev/null 2> "$ERR_LOG"
+            apk upgrade < /dev/null >/dev/null 2>> "$ERR_LOG"
+        fi
+        cmd_status=$?
+    fi
+    set -e # Restore strict failure settings
+
+    if [ "$cmd_status" -ne 0 ]; then
+        log_tui_status "${FG_RED}" "✘" "CRASHED"
+        echo -e "\n${FG_RED}┌─── CRITICAL SYSTEM DIAGNOSTIC ERROR ERROR LOG ─────────────────────────┐${RST}"
+        cat "$ERR_LOG" | sed 's/^/  /' || echo "  Unknown structural system crash state."
+        echo -e "${FG_RED}└────────────────────────────────────────────────────────────────────────┘${RST}"
+        exit 1
     fi
     log_tui_status "${FG_GRN}" "✓" "UPDATED"
 
@@ -375,17 +395,17 @@ for i in "${!targets[@]}"; do
     log_tui_step "${FG_YLW}" "AUTO" "Injecting unattended processing background engines"
     if [ "$os_type" = "debian" ] || [ "$mode" = "pve-host" ]; then
         if [ "$mode" = "pve-host" ]; then
-            env DEBIAN_FRONTEND=noninteractive apt-get install -y unattended-upgrades apt-listchanges >/dev/null 2>&1
-            debconf-set-selections <<< "unattended-upgrades unattended-upgrades/enable_auto_updates boolean true"
-            dpkg-reconfigure -f noninteractive unattended-upgrades >/dev/null 2>&1
+            env DEBIAN_FRONTEND=noninteractive apt-get install -y unattended-upgrades apt-listchanges < /dev/null >/dev/null 2>&1
+            echo "unattended-upgrades unattended-upgrades/enable_auto_updates boolean true" | debconf-set-selections < /dev/null >/dev/null 2>&1
+            dpkg-reconfigure -f noninteractive unattended-upgrades < /dev/null >/dev/null 2>&1
         elif [ "$mode" = "proxmox-lxc" ]; then
-            pct exec "$target" -- sh -c "env DEBIAN_FRONTEND=noninteractive apt-get install -y unattended-upgrades apt-listchanges" >/dev/null 2>&1
-            pct exec "$target" -- debconf-set-selections <<< "unattended-upgrades unattended-upgrades/enable_auto_updates boolean true"
-            pct exec "$target" -- dpkg-reconfigure -f noninteractive unattended-upgrades >/dev/null 2>&1
+            pct exec "$target" -- sh -c "env DEBIAN_FRONTEND=noninteractive apt-get install -y unattended-upgrades apt-listchanges" < /dev/null >/dev/null 2>&1
+            pct exec "$target" -- sh -c "echo 'unattended-upgrades unattended-upgrades/enable_auto_updates boolean true' | debconf-set-selections" < /dev/null >/dev/null 2>&1
+            pct exec "$target" -- dpkg-reconfigure -f noninteractive unattended-upgrades < /dev/null >/dev/null 2>&1
         else
-            env DEBIAN_FRONTEND=noninteractive apt-get install -y unattended-upgrades apt-listchanges >/dev/null 2>&1
-            debconf-set-selections <<< "unattended-upgrades unattended-upgrades/enable_auto_updates boolean true"
-            dpkg-reconfigure -f noninteractive unattended-upgrades >/dev/null 2>&1
+            env DEBIAN_FRONTEND=noninteractive apt-get install -y unattended-upgrades apt-listchanges < /dev/null >/dev/null 2>&1
+            echo "unattended-upgrades unattended-upgrades/enable_auto_updates boolean true" | debconf-set-selections < /dev/null >/dev/null 2>&1
+            dpkg-reconfigure -f noninteractive unattended-upgrades < /dev/null >/dev/null 2>&1
         fi
     elif [ "$os_type" = "alpine" ]; then
         run_cmd "$mode" "$target" apk add cronie
@@ -403,7 +423,7 @@ for i in "${!targets[@]}"; do
     if ! check_binary "$mode" "$target" "starship"; then
         if [ "$os_type" = "debian" ]; then run_cmd "$mode" "$target" env DEBIAN_FRONTEND=noninteractive apt-get install -y curl; fi
         if [ "$os_type" = "alpine" ]; then run_cmd "$mode" "$target" apk add curl; fi
-        if [ "$mode" = "proxmox-lxc" ]; then pct exec "$target" -- sh -c "curl -sS https://starship.rs/install.sh | sh -s -- -y" >/dev/null 2>&1; else sh -c "curl -sS https://starship.rs/install.sh | sh -s -- -y" >/dev/null 2>&1; fi
+        if [ "$mode" = "proxmox-lxc" ]; then pct exec "$target" -- sh -c "curl -sS https://starship.rs/install.sh | sh -s -- -y" < /dev/null >/dev/null 2>&1; else sh -c "curl -sS https://starship.rs/install.sh | sh -s -- -y" < /dev/null >/dev/null 2>&1; fi
         log_tui_status "${FG_GRN}" "✓" "INSTALLED"
     else
         log_tui_status "${FG_SAP}" "ℹ" "EXISTS"
@@ -448,11 +468,11 @@ for i in "${!targets[@]}"; do
                 [ -z "$compose_path" ] && continue
                 compose_dir=$(dirname "$compose_path")
                 if [ "$mode" = "proxmox-lxc" ]; then
-                    if pct exec "$target" -- docker compose version >/dev/null 2>&1; then pct exec "$target" -- sh -c "cd $compose_dir && docker compose pull && docker compose up -d" >/dev/null 2>&1;
-                    elif pct exec "$target" -- docker-compose version >/dev/null 2>&1; then pct exec "$target" -- sh -c "cd $compose_dir && docker-compose pull && docker-compose up -d" >/dev/null 2>&1; fi
+                    if pct exec "$target" -- docker compose version < /dev/null >/dev/null 2>&1; then pct exec "$target" -- sh -c "cd $compose_dir && docker compose pull && docker compose up -d" < /dev/null >/dev/null 2>&1;
+                    elif pct exec "$target" -- docker-compose version < /dev/null >/dev/null 2>&1; then pct exec "$target" -- sh -c "cd $compose_dir && docker-compose pull && docker-compose up -d" < /dev/null >/dev/null 2>&1; fi
                 else
-                    if docker compose version >/dev/null 2>&1; then sh -c "cd $compose_dir && docker compose pull && docker compose up -d" >/dev/null 2>&1;
-                    elif docker-compose version >/dev/null 2>&1; then sh -c "cd $compose_dir && docker-compose pull && docker-compose up -d" >/dev/null 2>&1; fi
+                    if docker compose version < /dev/null >/dev/null 2>&1; then sh -c "cd $compose_dir && docker compose pull && docker compose up -d" < /dev/null >/dev/null 2>&1;
+                    elif docker-compose version < /dev/null >/dev/null 2>&1; then sh -c "cd $compose_dir && docker-compose pull && docker-compose up -d" < /dev/null >/dev/null 2>&1; fi
                 fi
             done <<< "$compose_files"
             log_tui_status "${FG_GRN}" "✓" "DOCKER COMS"
@@ -463,6 +483,9 @@ for i in "${!targets[@]}"; do
         log_tui_status "${FG_SAP}" "ℹ" "NO ENGINE"
     fi
 done
+
+# Clean up working log directories cleanly
+rm -f "$ERR_LOG"
 
 echo -e "\n${FG_GRN}┌────────────────────────────────────────────────────────────────────────┐${RST}"
 echo -e "${FG_GRN}│${RST} ${BG_GRN} ⚡ COMPLETED: ALL DEPLOYMENT NODE TARGETS OPTIMIZED SUCCESSFULLY ${RST}    ${FG_GRN}│${RST}"
