@@ -44,6 +44,18 @@ exec_live() {
     fi
 }
 
+exec_live_fn() {
+    local fn_name="$1"
+    local log_file="/tmp/updater_last.log"
+    echo -e "  ${FG_YLW}${RST}${FG_YLW}PROC${RST}${FG_YLW}${RST} Running: $fn_name"
+
+    if ! "$fn_name" > "$log_file" 2>&1; then
+        echo -e "\n${FG_RED}!!! ERROR DETECTED !!!${RST}"
+        tail -n 20 "$log_file"
+        exit 1
+    fi
+}
+
 dedupe_sources_file() {
     local file="$1"
     local tmp
@@ -166,8 +178,7 @@ for target in "${targets[@]}"; do
     # Source normalization to prevent duplicate repository entries.
     echo -e "  ${FG_CYN}${RST}${FG_CYN}APT${RST}${FG_CYN}${RST} Normalizing APT source definitions..."
     if [ "$target" == "pve-host-node" ]; then
-        exec_live "$(declare -f dedupe_sources_file dedupe_list_file normalize_apt_sources)
-normalize_apt_sources"
+        exec_live_fn normalize_apt_sources
     fi
     update_status "${FG_GRN}✓ APT Sources Normalized${RST}"
 
