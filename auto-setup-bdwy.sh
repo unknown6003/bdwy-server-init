@@ -884,6 +884,13 @@ fi
 '
 }
 
+is_proxmox_host() {
+    if [ -f /etc/pve/.version ] || [ -f /etc/pve ] || command -v pveversion >/dev/null 2>&1; then
+        return 0
+    fi
+    return 1
+}
+
 # --- MAIN EXECUTION ---
 show_loading_screen
 render_dashboard
@@ -936,11 +943,13 @@ for target in "${targets[@]}"; do
     # Source normalization to prevent duplicate repository entries.
     ui_set phase "APT"
     ui_set action "Normalizing APT source definitions..."
-    if [ "$target" == "pve-host-node" ]; then
+    if [ "$target" == "pve-host-node" ] && is_proxmox_host; then
         exec_live_fn enforce_proxmox_repo_policy
         exec_live_fn normalize_apt_sources
+        update_status "${FG_GRN}✓ Proxmox APT sources normalized${RST}"
+    else
+        update_status "${FG_GRN}✓ APT sources skipped (non-host or non-Proxmox target)${RST}"
     fi
-    update_status "${FG_GRN}✓ APT Sources Normalized${RST}"
 
     # Update Repos
     ui_set phase "REPO"
