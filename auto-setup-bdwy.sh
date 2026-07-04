@@ -443,6 +443,14 @@ exec_live_fn() {
     ui_set result "${FG_GRN}Completed${RST}"
 }
 
+exec_pct_script() {
+    local ctid="$1"
+    local script="$2"
+    local quoted_script
+    quoted_script="$(printf '%q' "$script")"
+    exec_live "pct exec $ctid -- sh -lc $quoted_script"
+}
+
 refresh_updater_binary() {
     local remote_tmp
     remote_tmp="$(mktemp)"
@@ -847,81 +855,100 @@ chmod 0644 /etc/profile.d/tmux.sh
 install_starship_container() {
     local ctid="$1"
     local pkg_mgr="$2"
+    local script
     case "$pkg_mgr" in
         apt)
-            exec_live "pct exec $ctid -- sh -lc '
+            read -r -d '' script <<'EOF'
 if command -v starship >/dev/null 2>&1; then exit 0; fi
 if apt-get update -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=5 && apt-get install -y starship; then exit 0; fi
-ARCH=\"\$(uname -m)\"
-case \"\$ARCH\" in
-  x86_64) STAR_ARCH=\"x86_64-unknown-linux-gnu\" ;;
-  aarch64) STAR_ARCH=\"aarch64-unknown-linux-musl\" ;;
-  *) STAR_ARCH=\"\" ;;
+ARCH="$(uname -m)"
+case "$ARCH" in
+  x86_64) STAR_ARCH="x86_64-unknown-linux-gnu" ;;
+  aarch64) STAR_ARCH="aarch64-unknown-linux-musl" ;;
+  *) STAR_ARCH="" ;;
 esac
-if [ -n \"\$STAR_ARCH\" ]; then
-  TMP=\"\$(mktemp -d)\"
-  URL=\"https://github.com/starship/starship/releases/latest/download/starship-\${STAR_ARCH}.tar.gz\"
-  if command -v curl >/dev/null 2>&1; then curl -fsSL \"\$URL\" -o \"\$TMP/starship.tgz\" || true; fi
-  if [ ! -s \"\$TMP/starship.tgz\" ] && command -v wget >/dev/null 2>&1; then wget -qO \"\$TMP/starship.tgz\" \"\$URL\" || true; fi
-  if [ -s \"\$TMP/starship.tgz\" ] && tar -xzf \"\$TMP/starship.tgz\" -C \"\$TMP\" && [ -f \"\$TMP/starship\" ]; then
-    install -m 0755 \"\$TMP/starship\" /usr/local/bin/starship
-    rm -rf \"\$TMP\"
+if [ -n "$STAR_ARCH" ]; then
+  TMP="$(mktemp -d)"
+  URL="https://github.com/starship/starship/releases/latest/download/starship-${STAR_ARCH}.tar.gz"
+  if command -v curl >/dev/null 2>&1; then curl -fsSL "$URL" -o "$TMP/starship.tgz" || true; fi
+  if [ ! -s "$TMP/starship.tgz" ] && command -v wget >/dev/null 2>&1; then wget -qO "$TMP/starship.tgz" "$URL" || true; fi
+  if [ -s "$TMP/starship.tgz" ] && tar -xzf "$TMP/starship.tgz" -C "$TMP" && [ -f "$TMP/starship" ]; then
+    install -m 0755 "$TMP/starship" /usr/local/bin/starship
+    rm -rf "$TMP"
     exit 0
   fi
-  rm -rf \"\$TMP\"
+  rm -rf "$TMP"
+fi
+if apk add --no-cache starship; then exit 0; fi
+if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then
+  if [ -n "$STAR_ARCH" ]; then
+    TMP="$(mktemp -d)"
+    URL="https://github.com/starship/starship/releases/latest/download/starship-${STAR_ARCH}.tar.gz"
+    if command -v curl >/dev/null 2>&1; then curl -fsSL "$URL" -o "$TMP/starship.tgz" || true; fi
+    if [ ! -s "$TMP/starship.tgz" ] && command -v wget >/dev/null 2>&1; then wget -qO "$TMP/starship.tgz" "$URL" || true; fi
+    if [ -s "$TMP/starship.tgz" ] && tar -xzf "$TMP/starship.tgz" -C "$TMP" && [ -f "$TMP/starship" ]; then
+      install -m 0755 "$TMP/starship" /usr/local/bin/starship
+      rm -rf "$TMP"
+      exit 0
+    fi
+    rm -rf "$TMP"
+  fi
 fi
 exit 1
-'"
+EOF
             ;;
         apk)
-            exec_live "pct exec $ctid -- sh -lc '
+            read -r -d '' script <<'EOF'
 if command -v starship >/dev/null 2>&1; then exit 0; fi
 
-ARCH=\"\$(uname -m)\"
-case \"\$ARCH\" in
-  x86_64) STAR_ARCH=\"x86_64-unknown-linux-musl\" ;;
-  aarch64) STAR_ARCH=\"aarch64-unknown-linux-musl\" ;;
-  *) STAR_ARCH=\"\" ;;
+ARCH="$(uname -m)"
+case "$ARCH" in
+  x86_64) STAR_ARCH="x86_64-unknown-linux-musl" ;;
+  aarch64) STAR_ARCH="aarch64-unknown-linux-musl" ;;
+  *) STAR_ARCH="" ;;
 esac
 
-if [ -n \"\$STAR_ARCH\" ]; then
-  TMP=\"\$(mktemp -d)\"
-  URL=\"https://github.com/starship/starship/releases/latest/download/starship-\${STAR_ARCH}.tar.gz\"
+if [ -n "$STAR_ARCH" ]; then
+  TMP="$(mktemp -d)"
+  URL="https://github.com/starship/starship/releases/latest/download/starship-${STAR_ARCH}.tar.gz"
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL \"\$URL\" -o \"\$TMP/starship.tgz\" || true
+    curl -fsSL "$URL" -o "$TMP/starship.tgz" || true
   elif command -v wget >/dev/null 2>&1; then
-    wget -qO \"\$TMP/starship.tgz\" \"\$URL\" || true
+    wget -qO "$TMP/starship.tgz" "$URL" || true
   fi
-  if [ -s \"\$TMP/starship.tgz\" ] && tar -xzf \"\$TMP/starship.tgz\" -C \"\$TMP\" && [ -f \"\$TMP/starship\" ]; then
-    install -m 0755 \"\$TMP/starship\" /usr/local/bin/starship
-    rm -rf \"\$TMP\"
+  if [ -s "$TMP/starship.tgz" ] && tar -xzf "$TMP/starship.tgz" -C "$TMP" && [ -f "$TMP/starship" ]; then
+    install -m 0755 "$TMP/starship" /usr/local/bin/starship
+    rm -rf "$TMP"
     exit 0
   fi
-  rm -rf \"\$TMP\"
+  rm -rf "$TMP"
 fi
 
 if apk add --no-cache starship; then exit 0; fi
 if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then
-  if [ -n \"\$STAR_ARCH\" ]; then
-    TMP=\"\$(mktemp -d)\"
-    URL=\"https://github.com/starship/starship/releases/latest/download/starship-\${STAR_ARCH}.tar.gz\"
-    if command -v curl >/dev/null 2>&1; then curl -fsSL \"\$URL\" -o \"\$TMP/starship.tgz\" || true; fi
-    if [ ! -s \"\$TMP/starship.tgz\" ] && command -v wget >/dev/null 2>&1; then wget -qO \"\$TMP/starship.tgz\" \"\$URL\" || true; fi
-    if [ -s \"\$TMP/starship.tgz\" ] && tar -xzf \"\$TMP/starship.tgz\" -C \"\$TMP\" && [ -f \"\$TMP/starship\" ]; then
-      install -m 0755 \"\$TMP/starship\" /usr/local/bin/starship
-      rm -rf \"\$TMP\"
+  if [ -n "$STAR_ARCH" ]; then
+    TMP="$(mktemp -d)"
+    URL="https://github.com/starship/starship/releases/latest/download/starship-${STAR_ARCH}.tar.gz"
+    if command -v curl >/dev/null 2>&1; then curl -fsSL "$URL" -o "$TMP/starship.tgz" || true; fi
+    if [ ! -s "$TMP/starship.tgz" ] && command -v wget >/dev/null 2>&1; then wget -qO "$TMP/starship.tgz" "$URL" || true; fi
+    if [ -s "$TMP/starship.tgz" ] && tar -xzf "$TMP/starship.tgz" -C "$TMP" && [ -f "$TMP/starship" ]; then
+      install -m 0755 "$TMP/starship" /usr/local/bin/starship
+      rm -rf "$TMP"
       exit 0
     fi
-    rm -rf \"\$TMP\"
+    rm -rf "$TMP"
   fi
 fi
 exit 1
-'"
+EOF
             ;;
         *)
             return 1
             ;;
     esac
+    if ! exec_pct_script "$ctid" "$script"; then
+        return 1
+    fi
     configure_starship_container "$ctid"
     return 0
 }
