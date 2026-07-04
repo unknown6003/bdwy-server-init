@@ -4,10 +4,12 @@
 set -Eeuo pipefail
 
 # --- CONFIGURATION ---
-SCRIPT_VERSION="2026-05-23T06:50Z-starship-no-sh-installer"
+SCRIPT_VERSION="2026-07-04T00:00Z-self-update-cron"
 INSTALL_PATH="/usr/local/bin/container-updater"
 CRON_PATH="/etc/cron.weekly/container-updater"
+CRON_LOG_PATH="/var/log/container-updater.log"
 GITHUB_RAW_URL="https://raw.githubusercontent.com/unknown6003/bdwy-server-init/refs/heads/main/auto-setup-bdwy.sh"
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
 STARSHIP_TOML_CONTENT='"$schema" = '\''https://starship.rs/config-schema.json'\''
 
 format = """
@@ -409,6 +411,74 @@ exec_live_fn() {
     ui_set result "${FG_GRN}Completed${RST}"
 }
 
+refresh_updater_binary() {
+    local remote_tmp
+    remote_tmp="$(mktemp)"
+
+    if ! curl -fsSL "$GITHUB_RAW_URL" -o "$remote_tmp"; then
+        ui_set action "Refreshing updater script from GitHub..."
+        ui_set result "${FG_YLW}⚠ Updater refresh skipped (network unavailable)${RST}"
+        if [ ! -e "$INSTALL_PATH" ] && [ -n "$SCRIPT_SOURCE" ] && [ -f "$SCRIPT_SOURCE" ]; then
+            install -m 0755 "$SCRIPT_SOURCE" "$INSTALL_PATH"
+            ui_set result "${FG_GRN}✓ Bootstrapped updater from local source${RST}"
+        fi
+        rm -f "$remote_tmp"
+        return 0
+    fi
+
+    if ! cmp -s "$remote_tmp" "$INSTALL_PATH" 2>/dev/null; then
+        install -m 0755 "$remote_tmp" "$INSTALL_PATH"
+        ui_set result "${FG_GRN}✓ Updater binary refreshed from GitHub${RST}"
+        return 0
+    fi
+
+    rm -f "$remote_tmp"
+}
+
+ensure_host_scheduler() {
+    mkdir -p /etc/cron.weekly
+    cat > "$CRON_PATH" <<EOF
+#!/bin/sh
+set -eu
+/usr/local/bin/container-updater >> "$CRON_LOG_PATH" 2>&1 || true
+EOF
+    chmod 0755 "$CRON_PATH"
+    touch "$CRON_LOG_PATH"
+}
+
+ensure_container_scheduler() {
+    local ctid="$1"
+    pct exec "$ctid" -- sh -lc '
+if [ -d /etc/cron.weekly ]; then
+  cat > /etc/cron.weekly/container-updater <<'"'"'EOF'"'"'
+#!/bin/sh
+set -eu
+/usr/local/bin/container-updater >> /var/log/container-updater.log 2>&1 || true
+EOF
+  chmod 0755 /etc/cron.weekly/container-updater
+  touch /var/log/container-updater.log
+fi
+'
+}
+
+sync_updater_to_container() {
+    local ctid="$1"
+    if [ -z "$ctid" ]; then
+        return 1
+    fi
+
+    if ! pct push "$ctid" "$INSTALL_PATH" /tmp/container-updater; then
+        return 1
+    fi
+
+    if ! pct exec "$ctid" -- sh -lc '
+install -m 0755 /tmp/container-updater /usr/local/bin/container-updater
+rm -f /tmp/container-updater
+'; then
+        return 1
+    fi
+}
+
 dedupe_sources_file() {
     local file="$1"
     local tmp
@@ -772,8 +842,10 @@ require_cmd apt-get
 require_cmd awk
 require_cmd mktemp
 require_cmd curl
+require_cmd install
 mkdir -p /usr/local/bin /etc/cron.weekly
-curl -fsSL "$GITHUB_RAW_URL" -o "$INSTALL_PATH" 2>/dev/null || true
+refresh_updater_binary
+ensure_host_scheduler
 chmod +x "$INSTALL_PATH"
 ui_set phase "SHELL"
 ui_set action "Installing Starship on host..."
@@ -851,6 +923,11 @@ for target in "${targets[@]}"; do
         ui_set action "Installing Starship in CT ${target}..."
         if install_starship_container "$target" "$pkg_mgr"; then
             update_status "${FG_GRN}✓ CT ${target} Starship Ready${RST}"
+            if sync_updater_to_container "$target"; then
+                ensure_container_scheduler "$target"
+            else
+                update_status "${FG_YLW}⚠ CT ${target}: updater sync failed${RST}"
+            fi
         else
             update_status "${FG_RED}✗ CT ${target} Starship install failed${RST}"
             continue
