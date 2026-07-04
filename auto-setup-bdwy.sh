@@ -959,7 +959,7 @@ is_proxmox_host() {
 show_loading_screen
 render_dashboard
 
-if [ "$RUN_MODE" = "sync-only" ]; then
+if [ "${RUN_MODE:-full}" = "sync-only" ]; then
     sync_only_run
     exit 0
 fi
