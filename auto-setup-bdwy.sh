@@ -12,6 +12,7 @@ GITHUB_RAW_URL="https://raw.githubusercontent.com/unknown6003/bdwy-server-init/r
 SCRIPT_SOURCE="${BASH_SOURCE[0]}"
 TMUX_SESSION_NAME="main"
 STARSHIP_TOML_CONTENT='"$schema" = '\''https://starship.rs/config-schema.json'\''
+STARSHIP_CONFIG_PATH="/etc/starship/starship.toml"
 
 format = """
 [](red)\
@@ -699,55 +700,44 @@ ensure_tmux_host() {
 }
 
 configure_starship_host() {
-    mkdir -p /root/.config
-    cat > /root/.config/starship.toml <<EOF
+    mkdir -p /etc/starship
+    cat > /etc/starship/starship.toml <<EOF
 ${STARSHIP_TOML_CONTENT}
 EOF
     cat > /etc/profile.d/starship.sh <<'EOF'
-export STARSHIP_CONFIG=/root/.config/starship.toml
-if command -v starship >/dev/null 2>&1; then
+export STARSHIP_CONFIG=/etc/starship/starship.toml
+if [ -n "$SSH_CONNECTION" ] && [ -n "$PS1" ] && command -v starship >/dev/null 2>&1; then
   case "${SHELL##*/}" in
     bash) eval "$(starship init bash)" ;;
     zsh) eval "$(starship init zsh)" ;;
     fish) eval "$(starship init fish)" ;;
+    *) ;;
   esac
 fi
 EOF
     chmod 0644 /etc/profile.d/starship.sh
-    ensure_line_in_file 'export STARSHIP_CONFIG=/root/.config/starship.toml' /root/.profile
-    ensure_line_in_file 'export STARSHIP_CONFIG=/root/.config/starship.toml' /root/.ashrc
-    ensure_line_in_file 'export STARSHIP_CONFIG=/root/.config/starship.toml' /root/.bashrc
-    ensure_line_in_file 'eval "$(starship init bash)"' /root/.bashrc
-    ensure_line_in_file 'export STARSHIP_CONFIG=/root/.config/starship.toml' /root/.zshrc
-    ensure_line_in_file 'eval "$(starship init zsh)"' /root/.zshrc
 }
 
 configure_starship_container() {
     local ctid="$1"
     pct exec "$ctid" -- sh -lc "
-mkdir -p /root/.config
-cat > /root/.config/starship.toml <<'EOF'
+    mkdir -p /etc/starship
+    cat > /etc/starship/starship.toml <<'EOF'
 ${STARSHIP_TOML_CONTENT}
 EOF
-mkdir -p /etc/profile.d
-cat > /etc/profile.d/starship.sh <<'EOF'
-export STARSHIP_CONFIG=/root/.config/starship.toml
-if command -v starship >/dev/null 2>&1; then
+    mkdir -p /etc/profile.d
+    cat > /etc/profile.d/starship.sh <<'EOF'
+export STARSHIP_CONFIG=/etc/starship/starship.toml
+if [ -n \"\$SSH_CONNECTION\" ] && [ -n \"\$PS1\" ] && command -v starship >/dev/null 2>&1; then
   case \"\${SHELL##*/}\" in
     bash) eval \"\$(starship init bash)\" ;;
     zsh) eval \"\$(starship init zsh)\" ;;
     fish) eval \"\$(starship init fish)\" ;;
+    *) ;;
   esac
 fi
 EOF
-chmod 0644 /etc/profile.d/starship.sh
-touch /root/.profile /root/.ashrc /root/.bashrc /root/.zshrc
-grep -Fqx 'export STARSHIP_CONFIG=/root/.config/starship.toml' /root/.profile || echo 'export STARSHIP_CONFIG=/root/.config/starship.toml' >> /root/.profile
-grep -Fqx 'export STARSHIP_CONFIG=/root/.config/starship.toml' /root/.ashrc || echo 'export STARSHIP_CONFIG=/root/.config/starship.toml' >> /root/.ashrc
-grep -Fqx 'export STARSHIP_CONFIG=/root/.config/starship.toml' /root/.bashrc || echo 'export STARSHIP_CONFIG=/root/.config/starship.toml' >> /root/.bashrc
-grep -Fqx 'eval \"\$(starship init bash)\"' /root/.bashrc || echo 'eval \"\$(starship init bash)\"' >> /root/.bashrc
-grep -Fqx 'export STARSHIP_CONFIG=/root/.config/starship.toml' /root/.zshrc || echo 'export STARSHIP_CONFIG=/root/.config/starship.toml' >> /root/.zshrc
-grep -Fqx 'eval \"\$(starship init zsh)\"' /root/.zshrc || echo 'eval \"\$(starship init zsh)\"' >> /root/.zshrc
+    chmod 0644 /etc/profile.d/starship.sh
 "
 }
 
