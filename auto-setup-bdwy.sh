@@ -10,6 +10,7 @@ CRON_PATH="/etc/cron.weekly/container-updater"
 CRON_LOG_PATH="/var/log/container-updater.log"
 GITHUB_RAW_URL="https://raw.githubusercontent.com/unknown6003/bdwy-server-init/refs/heads/main/auto-setup-bdwy.sh"
 SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+TMUX_SESSION_NAME="main"
 STARSHIP_TOML_CONTENT='"$schema" = '\''https://starship.rs/config-schema.json'\''
 
 format = """
@@ -687,6 +688,16 @@ install_starship_host() {
     }
 }
 
+ensure_tmux_host() {
+    if command -v tmux >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if ! apt-get install -y tmux >/dev/null 2>&1; then
+        return 0
+    fi
+}
+
 configure_starship_host() {
     mkdir -p /root/.config
     cat > /root/.config/starship.toml <<EOF
@@ -696,17 +707,15 @@ EOF
 export STARSHIP_CONFIG=/root/.config/starship.toml
 if command -v starship >/dev/null 2>&1; then
   case "${SHELL##*/}" in
-    zsh) eval "$(starship init zsh)" ;;
     bash) eval "$(starship init bash)" ;;
-    *) eval "$(starship init sh)" ;;
+    zsh) eval "$(starship init zsh)" ;;
+    fish) eval "$(starship init fish)" ;;
   esac
 fi
 EOF
     chmod 0644 /etc/profile.d/starship.sh
     ensure_line_in_file 'export STARSHIP_CONFIG=/root/.config/starship.toml' /root/.profile
-    ensure_line_in_file 'eval "$(starship init sh)"' /root/.profile
     ensure_line_in_file 'export STARSHIP_CONFIG=/root/.config/starship.toml' /root/.ashrc
-    ensure_line_in_file 'eval "$(starship init sh)"' /root/.ashrc
     ensure_line_in_file 'export STARSHIP_CONFIG=/root/.config/starship.toml' /root/.bashrc
     ensure_line_in_file 'eval "$(starship init bash)"' /root/.bashrc
     ensure_line_in_file 'export STARSHIP_CONFIG=/root/.config/starship.toml' /root/.zshrc
@@ -725,22 +734,49 @@ cat > /etc/profile.d/starship.sh <<'EOF'
 export STARSHIP_CONFIG=/root/.config/starship.toml
 if command -v starship >/dev/null 2>&1; then
   case \"\${SHELL##*/}\" in
-    zsh) eval \"\$(starship init zsh)\" ;;
     bash) eval \"\$(starship init bash)\" ;;
-    *) eval \"\$(starship init sh)\" ;;
+    zsh) eval \"\$(starship init zsh)\" ;;
+    fish) eval \"\$(starship init fish)\" ;;
   esac
 fi
 EOF
 chmod 0644 /etc/profile.d/starship.sh
 touch /root/.profile /root/.ashrc /root/.bashrc /root/.zshrc
 grep -Fqx 'export STARSHIP_CONFIG=/root/.config/starship.toml' /root/.profile || echo 'export STARSHIP_CONFIG=/root/.config/starship.toml' >> /root/.profile
-grep -Fqx 'eval \"\$(starship init sh)\"' /root/.profile || echo 'eval \"\$(starship init sh)\"' >> /root/.profile
 grep -Fqx 'export STARSHIP_CONFIG=/root/.config/starship.toml' /root/.ashrc || echo 'export STARSHIP_CONFIG=/root/.config/starship.toml' >> /root/.ashrc
-grep -Fqx 'eval \"\$(starship init sh)\"' /root/.ashrc || echo 'eval \"\$(starship init sh)\"' >> /root/.ashrc
 grep -Fqx 'export STARSHIP_CONFIG=/root/.config/starship.toml' /root/.bashrc || echo 'export STARSHIP_CONFIG=/root/.config/starship.toml' >> /root/.bashrc
 grep -Fqx 'eval \"\$(starship init bash)\"' /root/.bashrc || echo 'eval \"\$(starship init bash)\"' >> /root/.bashrc
 grep -Fqx 'export STARSHIP_CONFIG=/root/.config/starship.toml' /root/.zshrc || echo 'export STARSHIP_CONFIG=/root/.config/starship.toml' >> /root/.zshrc
 grep -Fqx 'eval \"\$(starship init zsh)\"' /root/.zshrc || echo 'eval \"\$(starship init zsh)\"' >> /root/.zshrc
+"
+}
+
+configure_tmux_host() {
+    mkdir -p /etc/profile.d
+    cat > /etc/profile.d/tmux.sh <<EOF
+# Attach interactive SSH sessions to a shared tmux workspace.
+if [ -n "\${SSH_CONNECTION:-}" ] && [ -z "\${TMUX:-}" ] && command -v tmux >/dev/null 2>&1; then
+    case "\${-}" in
+        *i*) tmux new-session -A -s "${TMUX_SESSION_NAME}" ;;
+    esac
+fi
+EOF
+    chmod 0644 /etc/profile.d/tmux.sh
+}
+
+configure_tmux_container() {
+    local ctid="$1"
+    pct exec "$ctid" -- sh -lc "
+mkdir -p /etc/profile.d
+cat > /etc/profile.d/tmux.sh <<'EOF'
+# Attach interactive SSH sessions to a shared tmux workspace.
+if [ -n \"\${SSH_CONNECTION:-}\" ] && [ -z \"\${TMUX:-}\" ] && command -v tmux >/dev/null 2>&1; then
+    case \"\${-}\" in
+        *i*) tmux new-session -A -s \"${TMUX_SESSION_NAME}\" ;;
+    esac
+fi
+EOF
+chmod 0644 /etc/profile.d/tmux.sh
 "
 }
 
@@ -831,6 +867,23 @@ is_container_running() {
     pct status "$ctid" 2>/dev/null | awk '{print $2}' | grep -qx "running"
 }
 
+ensure_tmux_container() {
+    local ctid="$1"
+    pct exec "$ctid" -- sh -lc '
+if command -v tmux >/dev/null 2>&1; then
+  exit 0
+fi
+
+if command -v apt-get >/dev/null 2>&1; then
+  apt-get install -y tmux >/dev/null 2>&1 || true
+fi
+
+if command -v apk >/dev/null 2>&1; then
+  apk add --no-cache tmux >/dev/null 2>&1 || true
+fi
+'
+}
+
 # --- MAIN EXECUTION ---
 show_loading_screen
 render_dashboard
@@ -850,7 +903,9 @@ chmod +x "$INSTALL_PATH"
 ui_set phase "SHELL"
 ui_set action "Installing Starship on host..."
 exec_live_fn install_starship_host
+ensure_tmux_host
 exec_live_fn configure_starship_host
+configure_tmux_host
 update_status "${FG_GRN}✓ Host Starship Ready${RST}"
 
 # 2. Target Resolution
@@ -923,6 +978,8 @@ for target in "${targets[@]}"; do
         ui_set action "Installing Starship in CT ${target}..."
         if install_starship_container "$target" "$pkg_mgr"; then
             update_status "${FG_GRN}✓ CT ${target} Starship Ready${RST}"
+            ensure_tmux_container "$target"
+            configure_tmux_container "$target"
             if sync_updater_to_container "$target"; then
                 ensure_container_scheduler "$target"
             else
