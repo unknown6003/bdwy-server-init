@@ -446,9 +446,23 @@ exec_live_fn() {
 exec_pct_script() {
     local ctid="$1"
     local script="$2"
-    local quoted_script
-    quoted_script="$(printf '%q' "$script")"
-    exec_live "pct exec $ctid -- sh -lc $quoted_script"
+    local local_script remote_script
+    local_script="$(mktemp)"
+    remote_script="/tmp/.bdwy-updater-cmd-$$.sh"
+
+    printf '%s\n' "$script" > "$local_script"
+    if ! pct push "$ctid" "$local_script" "$remote_script"; then
+        rm -f "$local_script"
+        return 1
+    fi
+    rm -f "$local_script"
+
+    if ! pct exec "$ctid" -- sh -lc "sh $remote_script"; then
+        pct exec "$ctid" -- sh -lc "rm -f $remote_script" >/dev/null 2>&1 || true
+        return 1
+    fi
+
+    pct exec "$ctid" -- sh -lc "rm -f $remote_script" >/dev/null 2>&1 || true
 }
 
 refresh_updater_binary() {
@@ -867,7 +881,7 @@ case "$ARCH" in
   aarch64) STAR_ARCH="aarch64-unknown-linux-musl" ;;
   *) STAR_ARCH="" ;;
 esac
-if [ -n "$STAR_ARCH" ]; then
+        if [ -n "$STAR_ARCH" ]; then
   TMP="$(mktemp -d)"
   URL="https://github.com/starship/starship/releases/latest/download/starship-${STAR_ARCH}.tar.gz"
   if command -v curl >/dev/null 2>&1; then curl -fsSL "$URL" -o "$TMP/starship.tgz" || true; fi
@@ -879,7 +893,6 @@ if [ -n "$STAR_ARCH" ]; then
   fi
   rm -rf "$TMP"
 fi
-if apk add --no-cache starship; then exit 0; fi
 if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then
   if [ -n "$STAR_ARCH" ]; then
     TMP="$(mktemp -d)"
@@ -986,7 +999,8 @@ is_proxmox_host() {
 show_loading_screen
 render_dashboard
 
-if [ "${RUN_MODE:-full}" = "sync-only" ]; then
+RUN_MODE="${RUN_MODE:-full}"
+if [ "$RUN_MODE" = "sync-only" ]; then
     sync_only_run
     exit 0
 fi
