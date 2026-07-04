@@ -14,7 +14,6 @@ TMUX_SESSION_NAME="main"
 STARSHIP_TOML_CONTENT='"$schema" = '\''https://starship.rs/config-schema.json'\''
 STARSHIP_CONFIG_PATH="/etc/starship/starship.toml"
 RUN_MODE="full"
-INCLUDE_STOPPED_CONTAINERS="false"
 
 show_usage() {
     cat <<'EOF'
@@ -31,10 +30,6 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --sync-only)
             RUN_MODE="sync-only"
-            shift
-            ;;
-        --include-stopped)
-            INCLUDE_STOPPED_CONTAINERS="true"
             shift
             ;;
         -h|--help)
@@ -534,7 +529,7 @@ sync_only_run() {
 
     while read -r target; do
         [ -n "$target" ] || continue
-        if [ "$INCLUDE_STOPPED_CONTAINERS" != "true" ] && ! is_container_running "$target"; then
+        if ! is_container_running "$target"; then
             update_status "${FG_YLW}⚠ CT ${target}: stopped, skipped${RST}"
             continue
         fi
