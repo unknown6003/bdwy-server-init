@@ -13,6 +13,41 @@ SCRIPT_SOURCE="${BASH_SOURCE[0]}"
 TMUX_SESSION_NAME="main"
 STARSHIP_TOML_CONTENT='"$schema" = '\''https://starship.rs/config-schema.json'\''
 STARSHIP_CONFIG_PATH="/etc/starship/starship.toml"
+RUN_MODE="full"
+INCLUDE_STOPPED_CONTAINERS="false"
+
+show_usage() {
+    cat <<'EOF'
+Usage:
+  /usr/local/bin/container-updater [--sync-only]
+
+Options:
+  --sync-only      Refresh updater binary and propagate it to running containers only.
+                   Skips package updates/upgrades and shell config changes.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --sync-only)
+            RUN_MODE="sync-only"
+            shift
+            ;;
+        --include-stopped)
+            INCLUDE_STOPPED_CONTAINERS="true"
+            shift
+            ;;
+        -h|--help)
+            show_usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown argument: $1" >&2
+            show_usage
+            exit 2
+            ;;
+    esac
+done
 
 format = """
 [](red)\
@@ -481,6 +516,50 @@ rm -f /tmp/container-updater
     fi
 }
 
+sync_only_run() {
+    local failed=0
+    local target_count=0
+    local target
+
+    ui_set phase "SYNC"
+    ui_set action "Refreshing host updater..."
+    refresh_updater_binary
+    ensure_host_scheduler
+    chmod +x "$INSTALL_PATH"
+    update_status "${FG_GRN}✓ Host updater synced${RST}"
+
+    if ! command -v pct >/dev/null 2>&1; then
+        return 0
+    fi
+
+    while read -r target; do
+        [ -n "$target" ] || continue
+        if [ "$INCLUDE_STOPPED_CONTAINERS" != "true" ] && ! is_container_running "$target"; then
+            update_status "${FG_YLW}⚠ CT ${target}: stopped, skipped${RST}"
+            continue
+        fi
+
+        target_count=$((target_count + 1))
+        ui_set target "$target"
+        ui_set action "Syncing updater to CT ${target}..."
+
+        if sync_updater_to_container "$target"; then
+            ensure_container_scheduler "$target"
+            update_status "${FG_GRN}✓ CT ${target}: updater synced${RST}"
+        else
+            update_status "${FG_RED}✗ CT ${target}: sync failed${RST}"
+            failed=$((failed + 1))
+        fi
+    done < <(pct list | awk 'NR>1 {print $1}')
+
+    if [ "$failed" -ne 0 ]; then
+        update_status "${FG_YLW}⚠ Sync complete with ${failed}/${target_count} failures${RST}"
+        return 1
+    fi
+
+    return 0
+}
+
 dedupe_sources_file() {
     local file="$1"
     local tmp
@@ -884,6 +963,11 @@ is_proxmox_host() {
 # --- MAIN EXECUTION ---
 show_loading_screen
 render_dashboard
+
+if [ "$RUN_MODE" = "sync-only" ]; then
+    sync_only_run
+    exit 0
+fi
 
 # 1. Setup
 ui_set phase "INIT"
