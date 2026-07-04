@@ -1,0 +1,56 @@
+name: Sync bdwy updater to host containers
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: bdwy-updater-sync-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger instant updater sync on host
+        shell: bash
+        env:
+          HOST: ${{ secrets.HOST_SSH_HOST }}
+          USER: ${{ secrets.HOST_SSH_USER }}
+          PORT: ${{ secrets.HOST_SSH_PORT }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${HOST:-}" ] || [ -z "${USER:-}" ]; then
+            echo "Missing HOST_SSH_HOST or HOST_SSH_USER secret"
+            exit 1
+          fi
+
+          mkdir -p ~/.ssh
+          echo "${{ secrets.HOST_SSH_PRIVATE_KEY }}" | tr -d '\r' > ~/.ssh/id_host_sync
+          chmod 600 ~/.ssh/id_host_sync
+
+          : "${PORT:=22}"
+          ssh-keyscan -p "$PORT" -H "$HOST" >> ~/.ssh/known_hosts
+
+          ssh -i ~/.ssh/id_host_sync -p "$PORT" \
+            -o IdentitiesOnly=yes -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            "${USER}@${HOST}" <<'EOF'
+          set -euo pipefail
+
+          if ! command -v /usr/local/bin/container-updater >/dev/null 2>&1; then
+            curl -fsSL https://raw.githubusercontent.com/unknown6003/bdwy-server-init/refs/heads/main/auto-setup-bdwy.sh \
+              -o /usr/local/bin/container-updater
+            chmod +x /usr/local/bin/container-updater
+          fi
+
+          if sudo -n true 2>/dev/null; then
+            sudo -n /usr/local/bin/container-updater --sync-only
+          else
+            /usr/local/bin/container-updater --sync-only
+          fi
+EOF
