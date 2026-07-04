@@ -701,11 +701,11 @@ ensure_tmux_host() {
 
 configure_starship_host() {
     mkdir -p /etc/starship
-    cat > /etc/starship/starship.toml <<EOF
+    cat > "$STARSHIP_CONFIG_PATH" <<EOF
 ${STARSHIP_TOML_CONTENT}
 EOF
     cat > /etc/profile.d/starship.sh <<'EOF'
-export STARSHIP_CONFIG=/etc/starship/starship.toml
+export STARSHIP_CONFIG=${STARSHIP_CONFIG_PATH}
 if [ -n "$SSH_CONNECTION" ] && [ -n "$PS1" ] && command -v starship >/dev/null 2>&1; then
   case "${SHELL##*/}" in
     bash) eval "$(starship init bash)" ;;
@@ -722,12 +722,12 @@ configure_starship_container() {
     local ctid="$1"
     pct exec "$ctid" -- sh -lc "
     mkdir -p /etc/starship
-    cat > /etc/starship/starship.toml <<'EOF'
+    cat > \"${STARSHIP_CONFIG_PATH}\" <<'EOF'
 ${STARSHIP_TOML_CONTENT}
 EOF
     mkdir -p /etc/profile.d
     cat > /etc/profile.d/starship.sh <<'EOF'
-export STARSHIP_CONFIG=/etc/starship/starship.toml
+export STARSHIP_CONFIG=${STARSHIP_CONFIG_PATH}
 if [ -n \"\$SSH_CONNECTION\" ] && [ -n \"\$PS1\" ] && command -v starship >/dev/null 2>&1; then
   case \"\${SHELL##*/}\" in
     bash) eval \"\$(starship init bash)\" ;;
