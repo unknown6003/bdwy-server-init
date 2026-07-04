@@ -4,7 +4,7 @@
 set -Eeuo pipefail
 
 # --- CONFIGURATION ---
-SCRIPT_VERSION="2026-07-04T00:00Z-self-update-cron"
+SCRIPT_VERSION="2026-07-04T20:48Z-fix-container-script-transport"
 INSTALL_PATH="/usr/local/bin/container-updater"
 CRON_PATH="/etc/cron.weekly/container-updater"
 CRON_LOG_PATH="/var/log/container-updater.log"
