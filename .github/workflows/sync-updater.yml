@@ -42,15 +42,16 @@ jobs:
             "${USER}@${HOST}" <<'EOF'
           set -euo pipefail
 
-          if ! command -v /usr/local/bin/container-updater >/dev/null 2>&1; then
-            curl -fsSL https://raw.githubusercontent.com/unknown6003/bdwy-server-init/refs/heads/main/auto-setup-bdwy.sh \
-              -o /usr/local/bin/container-updater
-            chmod +x /usr/local/bin/container-updater
-          fi
-
+          TMP_UPDATER="$(mktemp)"
+          trap 'rm -f "$TMP_UPDATER"' EXIT
+          curl -fsSL https://raw.githubusercontent.com/unknown6003/bdwy-server-init/refs/heads/main/auto-setup-bdwy.sh \
+            -o "$TMP_UPDATER"
+          chmod +x "$TMP_UPDATER"
           if sudo -n true 2>/dev/null; then
-            sudo -n /usr/local/bin/container-updater --sync-only
+            sudo -n "$TMP_UPDATER" --sync-only
+            install -m 0755 "$TMP_UPDATER" /usr/local/bin/container-updater
           else
-            /usr/local/bin/container-updater --sync-only
+            "$TMP_UPDATER" --sync-only
+            install -m 0755 "$TMP_UPDATER" /usr/local/bin/container-updater
           fi
 EOF
